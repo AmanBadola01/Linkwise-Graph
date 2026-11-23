@@ -1,0 +1,15 @@
+# Virtual Environment
+.venv/
+
+# Environment Variables & Secrets
+.env
+
+# Local ChromaDB Vector Database
+chroma_data/
+
+# Raw Datasets & Benchmark PDFs
+data_set/
+
+# Python Bytecode & Cache
+__pycache__/
+*.pyc

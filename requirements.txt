@@ -1,0 +1,22 @@
+# ========================================================
+# GraphRAG System Dependencies
+# ========================================================
+
+# Graph Database (Neo4j)
+neo4j>=6.0.0
+
+# Vector Database (ChromaDB)
+chromadb>=1.5.0
+
+# LLM Providers (Google Gemini)
+google-genai>=3.6.0
+
+# NLP & Entity Resolution
+rapidfuzz>=3.14.0
+
+# Document Processing (PDF)
+pypdf>=7.0.0
+
+# Data Validation & Environment
+pydantic>=2.10.0
+python-dotenv>=1.0.0
