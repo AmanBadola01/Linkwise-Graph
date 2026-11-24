@@ -1,4 +1,4 @@
-# Linkwise-Graph 
+# Linkwise-Graph
 
 > **A Hybrid GraphRAG & Vector Retrieval-Augmented Generation Platform** combining Knowledge Graph traversal (Neo4j) with dense semantic search (ChromaDB) and Google Gemini for deep relational reasoning and factual document intelligence.
 
@@ -6,14 +6,15 @@
 
 ## 📖 Overview
 
-Standard Vector RAG struggles with complex questions that span multiple entities, indirect relationships, or structural dependencies across documents. **Linkwise-Graph** solves this by parsing documents into both a **property graph in Neo4j** and a **persistent vector database in ChromaDB**, then fusing their outputs into a unified context for factual, cited answer synthesis.
+Standard Vector RAG struggles with complex queries that span multiple entities, indirect relationships, or structural dependencies across documents. **Linkwise-Graph** solves this by parsing documents into both a **property graph in Neo4j** and a **persistent vector database in ChromaDB**, then fusing their outputs into a unified context for factual, cited answer synthesis.
 
-It enables:
+Key capabilities:
 - **Entity & Relationship Extraction:** Automated extraction of entities, directed relationships, and metadata using Google Gemini with strict schema enforcement.
-- **Dynamic Noise Filtering & Entity Resolution:** Normalizes variations (e.g., `D. Kim` → `Daniel Kim`), deduplicates aliases, and filters generic stopwords without hardcoded rules.
+- **Dynamic Noise Filtering & Entity Resolution:** Normalizes variations (e.g., `J. Smith` → `John Smith`), deduplicates aliases via RapidFuzz, and prunes noise and stopwords without hardcoded rules.
 - **Multi-Hop Relational Reasoning:** Traverses 2-to-4 hop paths across the knowledge graph to trace explicit reasoning chains with source page citations.
 - **Modular Vector Retrieval:** Local, zero-cost ONNX embedding generation (`all-MiniLM-L6-v2`) paired with ChromaDB HNSW cosine similarity search.
 - **Hybrid Fusion & Synthesis:** Combines graph relational backbones with detailed text paragraphs to answer complex questions with bracketed page citations (`[Page X]`).
+- **Production REST API:** High-performance FastAPI backend with endpoints for multi-mode querying (`vector`, `graph`, `hybrid`), real-time graph visualization, document ingestion, and system health checks.
 
 ---
 
@@ -67,6 +68,15 @@ It enables:
                                       │
                                       ▼
                       ┌───────────────────────────────┐
+                      │      FastAPI Backend API      │
+                      │ • /api/v1/query  (Tri-Mode)   │
+                      │ • /api/v1/graph  (Visualizer) │
+                      │ • /api/v1/ingest (PDF Upload) │
+                      │ • /api/v1/health (Telemetry)  │
+                      └───────────────┬───────────────┘
+                                      │
+                                      ▼
+                      ┌───────────────────────────────┐
                       │  Cited Answer [Page X] Output │
                       │  + Visualizer Subgraph Payload│
                       └───────────────────────────────┘
@@ -90,8 +100,8 @@ flowchart TD
     VR --> Hybrid["Hybrid RAG Engine\n(HybridRetriever & Context Fusion)"]
     GR --> Hybrid
     
-    Hybrid --> LLM["HybridSynthesizer\n(Gemini Answer Generation)"]
-    LLM --> Out["Cited Answer [Page X]\n+ Subgraph Visualizer Payload"]
+    Hybrid --> API["FastAPI REST Layer\n(/api/v1/query, /api/v1/graph, /api/v1/ingest)"]
+    API --> Out["Cited Answer [Page X]\n+ Subgraph Visualizer Payload"]
 ```
 
 ---
@@ -100,39 +110,54 @@ flowchart TD
 
 ```text
 Linkwise-Graph/
-├── .env.example                               # Environment template
-├── .gitignore                                 # Git ignore (venv, env, chroma, datasets)
+├── .env.example                               # Environment configuration template
+├── .gitignore                                 # Git ignore patterns
 ├── requirements.txt                           # Production Python dependencies
-├── README.md                                  # Project documentation
+├── README.md                                  # System documentation
 │
 └── backend/
     └── app/
-        ├── models/
-        │   ├── __init__.py                    # Model exports
-        │   ├── document.py                    # DocumentSection, ParsedDocument models
-        │   ├── graph.py                       # Entity, Relationship, GraphNode, GraphEdge models
-        │   ├── vector.py                      # MatchedChunk, VectorRetrievalResult models
-        │   └── hybrid.py                      # FusedContext, HybridRetrievalResult models
+        ├── main.py                            # FastAPI application entry point & CORS
         │
-        └── services/
-            ├── __init__.py                    # Top-level service delegation exports
+        ├── api/                               # REST API layer
+        │   ├── __init__.py                    # API package exports
+        │   └── v1/                            # API Version 1 endpoints
+        │       ├── __init__.py                # Router aggregation
+        │       ├── health.py                  # GET /api/v1/health
+        │       ├── graph.py                   # GET /api/v1/graph
+        │       ├── query.py                   # POST /api/v1/query
+        │       └── ingest.py                  # POST /api/v1/ingest
+        │
+        ├── models/                            # Domain data models
+        │   ├── __init__.py                    # Model exports
+        │   ├── document.py                    # DocumentSection, ParsedDocument
+        │   ├── graph.py                       # Entity, Relationship, GraphNode, GraphEdge
+        │   ├── vector.py                      # MatchedChunk, VectorRetrievalResult
+        │   └── hybrid.py                      # FusedContext, HybridRetrievalResult
+        │
+        ├── schemas/                           # API request & response schemas
+        │   ├── __init__.py                    # Schema exports
+        │   └── api_schemas.py                 # QueryRequest, QueryResponse, IngestionResponse, etc.
+        │
+        └── services/                          # Business logic & engines
+            ├── __init__.py                    # Service delegation exports
             │
             ├── graph/                         # Knowledge Graph Pipeline & Graph RAG
             │   ├── __init__.py                # Graph module exports
-            │   ├── document_parser.py         # PDF layout-aware chunking & heading extraction
-            │   ├── entity_extractor.py        # Gemini structured extraction with backoff
-            │   ├── noise_filter.py            # Regex & semantic noise pruning
+            │   ├── document_parser.py         # PDF layout chunking & header pruning
+            │   ├── entity_extractor.py        # Gemini structured extraction
+            │   ├── noise_filter.py            # Dynamic noise and stopword filtering
             │   ├── entity_resolver.py         # RapidFuzz deduplication & alias rewiring
             │   ├── graph_builder.py           # Neo4j schema, constraints, degree centrality
             │   ├── graph_retriever.py         # Entity linking, subgraphs, central hub fallback
-            │   └── multihop_reasoner.py       # 2-4 hop Cypher path traversal & reasoning chains
+            │   └── multihop_reasoner.py       # 2-4 hop Cypher traversal & reasoning chains
             │
             ├── vector/                        # Modular Vector RAG
             │   ├── __init__.py                # Vector module exports
-            │   ├── embedding_service.py       # ONNX all-MiniLM-L6-v2 local CPU embedder
-            │   ├── vector_store.py            # ChromaDB persistent collection & HNSW index
-            │   ├── vector_retriever.py        # Semantic query search & MatchedChunk ranking
-            │   └── vector_synthesizer.py      # Context linearization & Gemini answer synthesis
+            │   ├── embedding_service.py       # Local ONNX CPU embedder (all-MiniLM-L6-v2)
+            │   ├── vector_store.py            # ChromaDB persistent store & HNSW index
+            │   ├── vector_retriever.py        # Dense semantic search & chunk ranking
+            │   └── vector_synthesizer.py      # Context linearization & Gemini synthesis
             │
             └── hybrid/                        # Hybrid RAG Engine
                 ├── __init__.py                # Hybrid module exports
@@ -142,18 +167,18 @@ Linkwise-Graph/
 
 ---
 
-## 🛠️ Features Implemented
+## 🛠️ Core Components & Features
 
 ### 1. Document Ingestion & Parsing (`backend/app/services/graph/document_parser.py`)
-- Extracts text from multi-page PDFs with visual layout awareness.
-- Computes dynamic multi-page line frequency analysis to eliminate running headers and footers.
-- Detects hierarchical sections via regex pattern analysis (numbered, markdown, all-caps, title-case).
+- Visual layout-aware PDF text extraction with PyPDF.
+- Dynamic multi-page line frequency analysis to eliminate running headers and footers.
+- Regex-based hierarchical section detection (numbered, markdown, all-caps, title-case).
 
 ### 2. Knowledge Graph Pipeline (`backend/app/services/graph/`)
 - **Entity Extraction (`entity_extractor.py`):** Uses Google Gemini structured output to extract nodes, node types, descriptions, directed relationships, and source page numbers.
-- **Dynamic Noise Filtering (`noise_filter.py`):** Filters out temporal references, monetary amounts, generic lowercase labels, orphan nodes, and self-loops.
+- **Dynamic Noise Filtering (`noise_filter.py`):** Dynamically filters out temporal references, monetary amounts, generic lowercase labels, orphan nodes, and self-loops.
 - **Entity Resolution (`entity_resolver.py`):**
-  - Resolves person initial aliases (e.g. `D. Kim` → `Daniel Kim`).
+  - Resolves person initial aliases (e.g., `J. Smith` → `John Smith`).
   - Matches token-sort fuzzy similarity using RapidFuzz.
   - Rewires duplicate relationships to canonical nodes.
 - **Graph Builder (`graph_builder.py`):**
@@ -165,7 +190,7 @@ Linkwise-Graph/
 - **Graph Retriever (`graph_retriever.py`):**
   - Links queried entities via fuzzy matching and full-text indexes.
   - Expands 1-to-2 hop subgraphs around focal entities.
-  - **Central Hub Fallback:** Handles broad global queries by retrieving highest degree centrality nodes.
+  - Central Hub Fallback: handles broad global queries by retrieving highest degree centrality nodes.
 - **Multi-Hop Reasoner (`multihop_reasoner.py`):**
   - Executes variable-length Cypher traversals (`2..4` hops) and shortest-path queries.
   - Generates explicit step-by-step reasoning chains with page citations:
@@ -185,6 +210,25 @@ Linkwise-Graph/
   - Active subgraph nodes and directed edges for interactive frontend visualization.
   - Deduplicated source pages and supporting text chunks.
 
+### 6. FastAPI REST API (`backend/app/api/v1/`)
+- **`main.py`:** Application factory with CORS middleware configured for Next.js frontend, lifespan event management, and route registration.
+- **`health.py`:** Diagnostic endpoint reporting live connectivity to Neo4j, ChromaDB, and Google Gemini.
+- **`graph.py`:** Visualizer endpoint returning nodes (with degree centrality), directed edges, dynamic entity-type histograms, and focused subgraph filtering (`?entity=&depth=`).
+- **`query.py`:** Tri-mode RAG query routing (`mode: "vector" | "graph" | "hybrid"`). Returns cited answers, active visualizer subgraphs, and source page badges.
+- **`ingest.py`:** Multipart PDF upload handler executing the complete 6-stage ingestion pipeline into both ChromaDB and Neo4j.
+
+---
+
+## 🌐 API Reference
+
+| Method | Endpoint | Description | Key Parameters / Payload |
+|---|---|---|---|
+| `GET` | `/` | Service status & documentation metadata | None |
+| `GET` | `/api/v1/health` | Infrastructure connectivity & readiness | None |
+| `GET` | `/api/v1/graph` | Knowledge graph visualization payload | Query params: `entity` (optional), `depth` (1-3) |
+| `POST` | `/api/v1/query` | Unified multi-mode RAG querying | Body: `{"query": "...", "mode": "vector" \| "graph" \| "hybrid", "top_k": 3}` |
+| `POST` | `/api/v1/ingest` | PDF document upload & 6-stage ingestion | Multipart form: `file: UploadFile` (.pdf) |
+
 ---
 
 ## 🚀 Getting Started
@@ -202,6 +246,7 @@ cd Linkwise-Graph
 
 # Create and activate virtual environment
 python -m venv .venv
+
 # Windows (PowerShell):
 .venv\Scripts\Activate.ps1
 # Linux/macOS:
@@ -226,6 +271,9 @@ NEO4J_PASSWORD=your_password
 
 # Vector Database
 CHROMA_PERSIST_DIR=./chroma_data
+
+# CORS Origins (comma-separated)
+CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
 
 ### 3. Start Neo4j Container
@@ -238,11 +286,21 @@ docker run -d \
   neo4j:5-community
 ```
 
+### 4. Run the FastAPI Backend Server
+
+```bash
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+The interactive documentation will be available at:
+- **Swagger UI:** `http://localhost:8000/docs`
+- **ReDoc:** `http://localhost:8000/redoc`
+
 ---
 
-## ⚡ Usage Examples
+## ⚡ Programmatic Usage Examples
 
-### 1. Knowledge Graph Ingestion Pipeline Programmatically
+### 1. Ingestion Pipeline
 
 ```python
 from backend.app.services.graph import (
@@ -250,26 +308,26 @@ from backend.app.services.graph import (
     EntityExtractor,
     NoiseFilter,
     EntityResolver,
-    GraphBuilder
+    GraphBuilder,
 )
 
-# 1. Parse Document Layout
+# Parse Document Layout
 parser = DocumentParser()
 parsed_doc = parser.parse_pdf("path/to/document.pdf")
 
-# 2. Extract Entities & Relationships
+# Extract Entities & Relationships
 extractor = EntityExtractor()
 raw_extractions = [extractor.extract_section(s) for s in parsed_doc.sections]
 
-# 3. Filter Noise
+# Filter Noise
 filter_service = NoiseFilter()
 clean_extractions = [filter_service.filter(ext) for ext in raw_extractions]
 
-# 4. Resolve Aliases & Deduplicate
+# Resolve Aliases & Deduplicate
 resolver = EntityResolver()
 resolved_nodes, resolved_edges = resolver.resolve(clean_extractions)
 
-# 5. Build Graph in Neo4j
+# Build Graph in Neo4j
 builder = GraphBuilder()
 builder.setup_schema()
 builder.ingest_nodes(resolved_nodes)
@@ -277,57 +335,16 @@ builder.ingest_edges(resolved_edges)
 builder.compute_degrees()
 ```
 
-### 2. Querying via Vector RAG Programmatically
-
-```python
-from backend.app.services.vector import (
-    EmbeddingService,
-    VectorStore,
-    VectorRetriever,
-    VectorSynthesizer
-)
-
-# Initialize components
-embedder = EmbeddingService()
-store = VectorStore()
-retriever = VectorRetriever(embedding_service=embedder, vector_store=store)
-synthesizer = VectorSynthesizer()
-
-# Retrieve & Synthesize
-query = "What is the architecture of the payment service?"
-chunks = retriever.retrieve_chunks(query=query, top_k=3)
-result = synthesizer.synthesize(query=query, matched_chunks=chunks)
-
-print("Answer:", result.answer)
-for chunk in result.matched_chunks:
-    print(f"- [Page {chunk.page_number}] {chunk.section_title} (Score: {chunk.score})")
-```
-
-### 3. Multi-Hop Graph Reasoning Programmatically
-
-```python
-from backend.app.services.graph import MultiHopReasoner
-
-reasoner = MultiHopReasoner()
-result = reasoner.reason_and_answer(query="How does Daniel Kim relate to the PayCore architecture?")
-
-print("Answer:", result.answer)
-print("Reasoning Chain:")
-for step in result.reasoning_chain:
-    print(" ", step)
-```
-
-### 4. Querying via Hybrid RAG Programmatically
+### 2. Querying via Hybrid RAG
 
 ```python
 from backend.app.services.hybrid import HybridRetriever, HybridSynthesizer
 
-# Initialize hybrid components
 retriever = HybridRetriever()
 synthesizer = HybridSynthesizer()
 
 # Execute dual retrieval & context fusion
-query = "What system does Sarah Jenkins govern and what are its performance thresholds?"
+query = "What subsystem does the Lead Architect oversee and what are its performance limits?"
 fused_context = retriever.retrieve(query=query, top_k_vector=3, max_hops_graph=3)
 
 # Synthesize cited answer
@@ -335,7 +352,7 @@ result = synthesizer.synthesize(fused_context)
 
 print("Answer:", result.answer)
 print("Source Pages:", result.source_pages)
-print(f"Visualizer Nodes: {len(result.subgraph_nodes)}, Edges: {len(result.subgraph_edges)}")
+print(f"Active Subgraph: {len(result.subgraph_nodes)} nodes, {len(result.subgraph_edges)} edges")
 ```
 
 ---
@@ -344,12 +361,14 @@ print(f"Visualizer Nodes: {len(result.subgraph_nodes)}, Edges: {len(result.subgr
 
 | Layer | Component | Description |
 |---|---|---|
+| **Web Framework** | FastAPI 0.115+ | High-performance asynchronous REST API framework |
+| **ASGI Server** | Uvicorn | Lightning-fast ASGI web server implementation |
 | **Graph Database** | Neo4j 5 Community | Property graph, Cypher queries, shortest paths, degree centrality |
 | **Vector Database** | ChromaDB | Persistent local HNSW vector index with cosine metric |
-| **Embeddings** | ONNX `all-MiniLM-L6-v2` | 384-dimensional dense vectors on CPU (zero cost) |
-| **LLM & Reasoning** | Google Gemini `gemini-3.5-flash-lite` | Entity extraction & cited answer synthesis |
+| **Embeddings** | ONNX `all-MiniLM-L6-v2` | 384-dimensional dense vectors computed locally on CPU |
+| **LLM & Reasoning** | Google Gemini `gemini-3.5-flash-lite` | Structured entity extraction & cited answer synthesis |
 | **Entity Resolution** | RapidFuzz | Fuzzy token matching and person initial deduplication |
-| **Data Validation** | Pydantic v2 | Strictly typed domain models for document, graph, vector, & hybrid |
+| **Data Validation** | Pydantic v2 | Strictly typed domain models and API schemas |
 | **PDF Extraction** | PyPDF | Layout-aware paragraph and section parser |
 
 ---
