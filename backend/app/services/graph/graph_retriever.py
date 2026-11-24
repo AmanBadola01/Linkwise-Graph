@@ -143,19 +143,19 @@ class GraphRetriever:
             if alias_matched:
                 continue
 
-            # 3. Person Initial resolution in query (e.g. user asks about 'D. Kim' for 'Daniel Kim')
+            # 3. Person Initial resolution in query (e.g. user asks about 'J. Doe' for 'John Doe')
             if ent.get("type", "").lower() == "person":
                 parts = canonical.split()
                 if len(parts) >= 2:
                     first, last = parts[0].lower(), parts[-1].lower()
                     pattern_with_dot = f"{first[0]}. {last}"
                     pattern_no_dot = f"{first[0]} {last}"
-                    # Check if query contains abbreviated initial like 'd. kim' or 'd kim'
+                    # Check if query contains abbreviated initial like 'j. doe' or 'j doe'
                     if pattern_with_dot in query_lower or re.search(rf'\b{re.escape(pattern_no_dot)}\b', query_lower):
                         matched_canonical_names.add(canonical)
                         continue
 
-            # 4. Fuzzy matching for typos or slight variations (e.g. 'Pay Core' vs 'PayCore')
+            # 4. Fuzzy matching for typos or slight variations (e.g. token splitting or minor spelling errors)
             score = fuzz.partial_ratio(canonical_lower, query_lower)
             token_score = fuzz.token_set_ratio(canonical_lower, query_lower)
 

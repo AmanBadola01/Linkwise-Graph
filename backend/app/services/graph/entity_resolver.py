@@ -4,8 +4,8 @@ Entity Resolution Service
 -------------------------
 Identifies and merges duplicate entities and alias variations into canonical nodes:
 1. RapidFuzz Token-Set & Partial-Ratio string similarity (e.g. 'Acme Corp Technologies' == 'Acme Corp').
-2. Person Initial Resolution (e.g. 'D. Kim' == 'Daniel Kim', 'M. Lopez' == 'Maria Lopez').
-3. Contextual / Synonym Matching (e.g. 'Payment Service' == 'PayCore' via text descriptions).
+2. Person Initial Resolution (e.g. 'J. Smith' == 'John Smith', 'M. Lopez' == 'Maria Lopez').
+3. Contextual / Synonym Matching (e.g. 'Auth Service' == 'Authentication Module' via text descriptions).
 4. Edge Rewiring: Updates all relationships so source/target point to canonical node names.
 5. Canonical Consolidation: Combines descriptions and records alias history for Neo4j.
 """
@@ -124,7 +124,7 @@ class EntityResolver:
     def _select_canonical_name(self, items: List[ExtractedEntity]) -> str:
         """
         Selects the best canonical name for a cluster:
-        1. For Persons: prefers full unabbreviated names ('Daniel Kim' over 'D. Kim').
+        1. For Persons: prefers full unabbreviated names ('John Smith' over 'J. Smith').
         2. For Products/Tech: checks if an item is an internal nickname/alias ('referred to internally as X').
         3. Tie-breaker: earliest page introduction and original occurrence.
         """
@@ -186,7 +186,7 @@ class EntityResolver:
         if self.known_synonyms.get(n1_lower) == n2 or self.known_synonyms.get(n2_lower) == n1:
             return True
 
-        # Rule 4: Person Initial Resolution (e.g. 'D. Kim' == 'Daniel Kim', 'M. Lopez' == 'Maria Lopez')
+        # Rule 4: Person Initial Resolution (e.g. 'J. Smith' == 'John Smith', 'M. Lopez' == 'Maria Lopez')
         if t1 == "person":
             if self._matches_person_initial(n1, n2):
                 return True
@@ -198,7 +198,7 @@ class EntityResolver:
         if set_score >= 90.0 or (partial_score >= 95.0 and len(n1) > 5 and len(n2) > 5):
             return True
 
-        # Rule 6: Contextual / Description cross-reference (e.g. PayCore vs Payment Service)
+        # Rule 6: Contextual / Description cross-reference (e.g. service abbreviation vs service full title)
         if self._is_referenced_in_description(e1, e2):
             return True
 
@@ -206,7 +206,7 @@ class EntityResolver:
 
     # FUNCTION: Checks if two Person entities share the same surname and matching first initial.
     def _matches_person_initial(self, name1: str, name2: str) -> bool:
-        # Example pairs: ('D. Kim', 'Daniel Kim'), ('Maria Lopez', 'M. Lopez')
+        # Example pairs: ('J. Smith', 'John Smith'), ('Maria Lopez', 'M. Lopez')
         parts1 = name1.replace(".", " ").split()
         parts2 = name2.replace(".", " ").split()
 

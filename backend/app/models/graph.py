@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 class ExtractedEntity(BaseModel):
     name: str = Field(
         ...,
-        description="Canonical or mentioned name of the entity, e.g., 'Anita Rao', 'PayCore'"
+        description="Canonical or mentioned name of the entity, e.g., 'Core Platform', 'Architecture Team'"
     )
     type: str = Field(
         ...,
@@ -40,11 +40,11 @@ class ExtractedEntity(BaseModel):
 class ExtractedRelationship(BaseModel):
     source: str = Field(
         ...,
-        description="Name of the originating entity, e.g., 'Daniel Kim'"
+        description="Name of the originating entity"
     )
     target: str = Field(
         ...,
-        description="Name of the destination entity, e.g., 'Anita Rao'"
+        description="Name of the destination entity"
     )
     type: str = Field(
         ...,

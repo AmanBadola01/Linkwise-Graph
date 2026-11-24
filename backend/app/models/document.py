@@ -21,7 +21,7 @@ class DocumentSection(BaseModel):
     )
     document_name: str = Field(
         ...,
-        description="Name of the source file, e.g., 'NovaPay Technologies overview.pdf'"
+        description="Name of the source file, e.g., 'document.pdf'"
     )
     page_number: int = Field(
         ...,
