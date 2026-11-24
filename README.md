@@ -4,63 +4,99 @@
 
 ---
 
-##  Overview
+## 📖 Overview
 
-Standard Vector RAG struggles with complex questions that span multiple entities, indirect relationships, or structural dependencies. **Linkwise-Graph** solves this by parsing documents into both a **property graph in Neo4j** and a **persistent vector database in ChromaDB**.
+Standard Vector RAG struggles with complex questions that span multiple entities, indirect relationships, or structural dependencies across documents. **Linkwise-Graph** solves this by parsing documents into both a **property graph in Neo4j** and a **persistent vector database in ChromaDB**, then fusing their outputs into a unified context for factual, cited answer synthesis.
 
 It enables:
 - **Entity & Relationship Extraction:** Automated extraction of entities, directed relationships, and metadata using Google Gemini with strict schema enforcement.
-- **Dynamic Noise Filtering & Entity Resolution:** Normalizes variations (e.g., `D. Kim`  `Daniel Kim`), deduplicates aliases, and filters generic stopwords without hardcoded rules.
+- **Dynamic Noise Filtering & Entity Resolution:** Normalizes variations (e.g., `D. Kim` → `Daniel Kim`), deduplicates aliases, and filters generic stopwords without hardcoded rules.
 - **Multi-Hop Relational Reasoning:** Traverses 2-to-4 hop paths across the knowledge graph to trace explicit reasoning chains with source page citations.
 - **Modular Vector Retrieval:** Local, zero-cost ONNX embedding generation (`all-MiniLM-L6-v2`) paired with ChromaDB HNSW cosine similarity search.
-- **Page-Grounded Synthesis:** Synthesizes factual answers with bracketed page citations (`[Page X]`) powered by Gemini.
+- **Hybrid Fusion & Synthesis:** Combines graph relational backbones with detailed text paragraphs to answer complex questions with bracketed page citations (`[Page X]`).
 
 ---
 
 ## 🏗️ Architecture
 
+```text
+                      ┌───────────────────────────────┐
+                      │      Input PDF Document       │
+                      └───────────────┬───────────────┘
+                                      │
+                                      ▼
+                      ┌───────────────────────────────┐
+                      │        Document Parser        │
+                      │   (Layout & Header Removal)   │
+                      └───────────────┬───────────────┘
+                                      │
+                  ┌───────────────────┴───────────────────┐
+                  │ (Text Chunks)       (Structured Nodes)│
+                  ▼                                       ▼
+  ┌───────────────────────────────┐       ┌───────────────────────────────┐
+  │        Vector Pipeline        │       │   Knowledge Graph Pipeline    │
+  ├───────────────────────────────┤       ├───────────────────────────────┤
+  │ • EmbeddingService (ONNX)     │       │ • Entity Extractor (Gemini)   │
+  │ • VectorStore (ChromaDB HNSW) │       │ • Dynamic Noise Filter        │
+  │ • VectorRetriever             │       │ • Dynamic Entity Resolver     │
+  │ • VectorSynthesizer           │       │ • GraphBuilder (Neo4j Ingest) │
+  └───────────────┬───────────────┘       └───────────────┬───────────────┘
+                  │                                       │
+                  ▼                                       ▼
+  ┌───────────────────────────────┐       ┌───────────────────────────────┐
+  │       Vector RAG Engine       │       │     Neo4j Property Graph      │
+  │    (Dense Semantic Search)    │       │ (Nodes, Edges, Meta, Degrees) │
+  └───────────────┬───────────────┘       └───────────────┬───────────────┘
+                  │                                       │
+                  │                                       ▼
+                  │                       ┌───────────────────────────────┐
+                  │                       │       Graph RAG Engine        │
+                  │                       │ • GraphRetriever (Subgraphs)  │
+                  │                       │ • MultiHopReasoner (2-4 hops) │
+                  │                       └───────────────┬───────────────┘
+                  │                                       │
+                  └───────────────────┬───────────────────┘
+                                      │
+                                      ▼
+                      ┌───────────────────────────────┐
+                      │       Hybrid RAG Engine       │
+                      ├───────────────────────────────┤
+                      │ • HybridRetriever (Fusion)    │
+                      │ • HybridSynthesizer (Gemini)  │
+                      └───────────────┬───────────────┘
+                                      │
+                                      ▼
+                      ┌───────────────────────────────┐
+                      │  Cited Answer [Page X] Output │
+                      │  + Visualizer Subgraph Payload│
+                      └───────────────────────────────┘
 ```
-                                  ┌──────────────────────────────┐
-                                  │      Input PDF Document      │
-                                  └──────────────┬───────────────┘
-                                                 │
-                                                 ▼
-                                  ┌──────────────────────────────┐
-                                  │       Document Parser        │
-                                  │  (Layout, Headings, Header/  │
-                                  │     Footer Pruning)          │
-                                  └──────┬───────────────┬───────┘
-                                         │               │
-                     Sections (Text)     │               │ Sections (Structured)
-                     ▼                   │               ▼
-        ┌─────────────────────────┐      │   ┌──────────────────────────────┐
-        │     Vector Pipeline     │      │   │    Knowledge Graph Pipeline  │
-        ├─────────────────────────┤      │   ├──────────────────────────────┤
-        │  • EmbeddingService     │      │   │  • Entity Extractor (Gemini) │
-        │    (ONNX all-MiniLM)    │      │   │  • Dynamic Noise Filter      │
-        │  • VectorStore          │      │   │  • Dynamic Entity Resolver   │
-        │    (ChromaDB HNSW)      │      │   │    (RapidFuzz + Aliases)     │
-        │  • VectorRetriever      │      │   │  • GraphBuilder (Neo4j)      │
-        │  • VectorSynthesizer    │      │   └──────────────┬───────────────┘
-        └────────────┬────────────┘                         │
-                     │                                      ▼
-                     │                       ┌──────────────────────────────┐
-                     │                       │       Neo4j Property Graph   │
-                     │                       │  (Entities, Directed Edges,  │
-                     │                       │   Page Meta, Centrality)     │
-                     │                       └──────────────┬───────────────┘
-                     │                                      │
-                     ▼                                      ▼
-        ┌─────────────────────────┐          ┌──────────────────────────────┐
-        │   Vector RAG Engine     │          │       Graph RAG Engine       │
-        │ (Dense Semantic Search) │          │  • GraphRetriever (Subgraphs)│
-        │                         │          │  • MultiHopReasoner (2-4 hop)│
-        └─────────────────────────┘          └──────────────────────────────┘
+
+### System Dataflow
+
+```mermaid
+flowchart TD
+    Doc["Input PDF Document"] --> Parser["Document Parser\n(Layout & Header Removal)"]
+    
+    Parser -->|"Raw Text Chunks"| VP["Vector Pipeline\n(ONNX all-MiniLM-L6-v2)"]
+    Parser -->|"Structured Sections"| KG["Knowledge Graph Pipeline\n(Gemini Extraction & Resolution)"]
+    
+    VP --> VS[("ChromaDB Vector Store\n(HNSW Cosine Index)")]
+    KG --> Neo4j[("Neo4j Property Graph\n(Entities & Centrality)")]
+    
+    VS --> VR["Vector RAG Engine\n(Dense Semantic Search)"]
+    Neo4j --> GR["Graph RAG Engine\n(Multi-Hop Reasoning 2-4 hops)"]
+    
+    VR --> Hybrid["Hybrid RAG Engine\n(HybridRetriever & Context Fusion)"]
+    GR --> Hybrid
+    
+    Hybrid --> LLM["HybridSynthesizer\n(Gemini Answer Generation)"]
+    LLM --> Out["Cited Answer [Page X]\n+ Subgraph Visualizer Payload"]
 ```
 
 ---
 
-##  Project Structure
+## 📁 Project Structure
 
 ```text
 Linkwise-Graph/
@@ -75,46 +111,57 @@ Linkwise-Graph/
         │   ├── __init__.py                    # Model exports
         │   ├── document.py                    # DocumentSection, ParsedDocument models
         │   ├── graph.py                       # Entity, Relationship, GraphNode, GraphEdge models
-        │   └── vector.py                      # MatchedChunk, VectorRetrievalResult models
+        │   ├── vector.py                      # MatchedChunk, VectorRetrievalResult models
+        │   └── hybrid.py                      # FusedContext, HybridRetrievalResult models
         │
         └── services/
-            ├── document_parser.py             # PDF layout-aware chunking & heading extraction
-            ├── entity_extractor.py            # Gemini structured extraction with backoff
-            ├── noise_filter.py                # Regex & semantic noise pruning
-            ├── entity_resolver.py             # RapidFuzz deduplication & alias rewiring
-            ├── graph_builder.py               # Neo4j schema, constraints, degree centrality
-            ├── graph_retriever.py             # Entity linking, subgraphs, central hub fallback
-            ├── multihop_reasoner.py           # 2-4 hop Cypher path traversal & step-by-step chains
+            ├── __init__.py                    # Top-level service delegation exports
             │
-            └── vector/
-                ├── __init__.py                # Vector module exports
-                ├── embedding_service.py       # ONNX all-MiniLM-L6-v2 local CPU embedder
-                ├── vector_store.py            # ChromaDB persistent collection & HNSW index
-                ├── vector_retriever.py        # Semantic query search & MatchedChunk ranking
-                └── vector_synthesizer.py      # Context linearization & Gemini answer synthesis
+            ├── graph/                         # Knowledge Graph Pipeline & Graph RAG
+            │   ├── __init__.py                # Graph module exports
+            │   ├── document_parser.py         # PDF layout-aware chunking & heading extraction
+            │   ├── entity_extractor.py        # Gemini structured extraction with backoff
+            │   ├── noise_filter.py            # Regex & semantic noise pruning
+            │   ├── entity_resolver.py         # RapidFuzz deduplication & alias rewiring
+            │   ├── graph_builder.py           # Neo4j schema, constraints, degree centrality
+            │   ├── graph_retriever.py         # Entity linking, subgraphs, central hub fallback
+            │   └── multihop_reasoner.py       # 2-4 hop Cypher path traversal & reasoning chains
+            │
+            ├── vector/                        # Modular Vector RAG
+            │   ├── __init__.py                # Vector module exports
+            │   ├── embedding_service.py       # ONNX all-MiniLM-L6-v2 local CPU embedder
+            │   ├── vector_store.py            # ChromaDB persistent collection & HNSW index
+            │   ├── vector_retriever.py        # Semantic query search & MatchedChunk ranking
+            │   └── vector_synthesizer.py      # Context linearization & Gemini answer synthesis
+            │
+            └── hybrid/                        # Hybrid RAG Engine
+                ├── __init__.py                # Hybrid module exports
+                ├── hybrid_retriever.py        # Dual retrieval coordinator & context fusion
+                └── hybrid_synthesizer.py      # Dual-grounded cited answer synthesis
 ```
 
 ---
 
 ## 🛠️ Features Implemented
 
-### 1. Document Ingestion & Parsing (`document_parser.py`)
+### 1. Document Ingestion & Parsing (`backend/app/services/graph/document_parser.py`)
 - Extracts text from multi-page PDFs with visual layout awareness.
 - Computes dynamic multi-page line frequency analysis to eliminate running headers and footers.
 - Detects hierarchical sections via regex pattern analysis (numbered, markdown, all-caps, title-case).
 
-### 2. Knowledge Graph Pipeline
+### 2. Knowledge Graph Pipeline (`backend/app/services/graph/`)
 - **Entity Extraction (`entity_extractor.py`):** Uses Google Gemini structured output to extract nodes, node types, descriptions, directed relationships, and source page numbers.
 - **Dynamic Noise Filtering (`noise_filter.py`):** Filters out temporal references, monetary amounts, generic lowercase labels, orphan nodes, and self-loops.
 - **Entity Resolution (`entity_resolver.py`):**
-  - Resolves person initial aliases (e.g. `D. Kim`  `Daniel Kim`).
+  - Resolves person initial aliases (e.g. `D. Kim` → `Daniel Kim`).
   - Matches token-sort fuzzy similarity using RapidFuzz.
   - Rewires duplicate relationships to canonical nodes.
 - **Graph Builder (`graph_builder.py`):**
   - Enforces unique constraints and full-text indexes in Neo4j.
+  - Ingests canonical nodes and directed relationships.
   - Computes degree centrality dynamically on graph ingestion.
 
-### 3. Graph Retrieval & Multi-Hop Reasoning
+### 3. Graph Retrieval & Multi-Hop Reasoning (`backend/app/services/graph/`)
 - **Graph Retriever (`graph_retriever.py`):**
   - Links queried entities via fuzzy matching and full-text indexes.
   - Expands 1-to-2 hop subgraphs around focal entities.
@@ -130,6 +177,13 @@ Linkwise-Graph/
 - **`vector_store.py`:** Wraps ChromaDB persistent storage at `./chroma_data` using HNSW indexing with cosine distance metric.
 - **`vector_retriever.py`:** Embeds queries, retrieves nearest neighbors, normalizes distance into similarity scores $[0, 1]$, and produces typed `MatchedChunk` objects.
 - **`vector_synthesizer.py`:** Formats retrieved chunks into linearized context blocks and prompts Gemini (`gemini-3.5-flash-lite`) to produce accurate answers with bracketed page citations (`[Page X]`).
+
+### 5. Hybrid RAG Engine (`backend/app/services/hybrid/`)
+- **`hybrid_retriever.py`:** Executes parallel retrieval across both Neo4j (graph paths/subgraphs) and ChromaDB (vector chunks), deduplicates referenced source pages, and constructs a structured dual-section `FusedContext`.
+- **`hybrid_synthesizer.py`:** Feeds the fused context to Gemini with anti-hallucination prompting, producing a complete `HybridRetrievalResult` containing:
+  - Factual natural language answer with `[Page X]` citations.
+  - Active subgraph nodes and directed edges for interactive frontend visualization.
+  - Deduplicated source pages and supporting text chunks.
 
 ---
 
@@ -188,14 +242,16 @@ docker run -d \
 
 ## ⚡ Usage Examples
 
-### Knowledge Graph Ingestion Pipeline Programmatically
+### 1. Knowledge Graph Ingestion Pipeline Programmatically
 
 ```python
-from backend.app.services.document_parser import DocumentParser
-from backend.app.services.entity_extractor import EntityExtractor
-from backend.app.services.noise_filter import NoiseFilter
-from backend.app.services.entity_resolver import EntityResolver
-from backend.app.services.graph_builder import GraphBuilder
+from backend.app.services.graph import (
+    DocumentParser,
+    EntityExtractor,
+    NoiseFilter,
+    EntityResolver,
+    GraphBuilder
+)
 
 # 1. Parse Document Layout
 parser = DocumentParser()
@@ -215,11 +271,13 @@ resolved_nodes, resolved_edges = resolver.resolve(clean_extractions)
 
 # 5. Build Graph in Neo4j
 builder = GraphBuilder()
-builder.initialize_schema()
-builder.build_graph(resolved_nodes, resolved_edges)
+builder.setup_schema()
+builder.ingest_nodes(resolved_nodes)
+builder.ingest_edges(resolved_edges)
+builder.compute_degrees()
 ```
 
-### Querying via Vector RAG Programmatically
+### 2. Querying via Vector RAG Programmatically
 
 ```python
 from backend.app.services.vector import (
@@ -245,18 +303,39 @@ for chunk in result.matched_chunks:
     print(f"- [Page {chunk.page_number}] {chunk.section_title} (Score: {chunk.score})")
 ```
 
-### Multi-Hop Graph Reasoning Programmatically
+### 3. Multi-Hop Graph Reasoning Programmatically
 
 ```python
-from backend.app.services.multihop_reasoner import MultiHopReasoner
+from backend.app.services.graph import MultiHopReasoner
 
 reasoner = MultiHopReasoner()
-result = reasoner.reason(query="How does Daniel Kim relate to the PayCore architecture?")
+result = reasoner.reason_and_answer(query="How does Daniel Kim relate to the PayCore architecture?")
 
 print("Answer:", result.answer)
 print("Reasoning Chain:")
 for step in result.reasoning_chain:
     print(" ", step)
+```
+
+### 4. Querying via Hybrid RAG Programmatically
+
+```python
+from backend.app.services.hybrid import HybridRetriever, HybridSynthesizer
+
+# Initialize hybrid components
+retriever = HybridRetriever()
+synthesizer = HybridSynthesizer()
+
+# Execute dual retrieval & context fusion
+query = "What system does Sarah Jenkins govern and what are its performance thresholds?"
+fused_context = retriever.retrieve(query=query, top_k_vector=3, max_hops_graph=3)
+
+# Synthesize cited answer
+result = synthesizer.synthesize(fused_context)
+
+print("Answer:", result.answer)
+print("Source Pages:", result.source_pages)
+print(f"Visualizer Nodes: {len(result.subgraph_nodes)}, Edges: {len(result.subgraph_edges)}")
 ```
 
 ---
@@ -265,12 +344,12 @@ for step in result.reasoning_chain:
 
 | Layer | Component | Description |
 |---|---|---|
-| **Graph Database** | Neo4j 5 Community | Entity graph, Cypher queries, shortest paths, centrality |
+| **Graph Database** | Neo4j 5 Community | Property graph, Cypher queries, shortest paths, degree centrality |
 | **Vector Database** | ChromaDB | Persistent local HNSW vector index with cosine metric |
 | **Embeddings** | ONNX `all-MiniLM-L6-v2` | 384-dimensional dense vectors on CPU (zero cost) |
 | **LLM & Reasoning** | Google Gemini `gemini-3.5-flash-lite` | Entity extraction & cited answer synthesis |
 | **Entity Resolution** | RapidFuzz | Fuzzy token matching and person initial deduplication |
-| **Data Validation** | Pydantic v2 | Strictly typed domain models for document, graph, & vector |
+| **Data Validation** | Pydantic v2 | Strictly typed domain models for document, graph, vector, & hybrid |
 | **PDF Extraction** | PyPDF | Layout-aware paragraph and section parser |
 
 ---

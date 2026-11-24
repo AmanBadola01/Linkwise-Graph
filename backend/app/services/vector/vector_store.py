@@ -86,8 +86,8 @@ class VectorStore:
         self.collection.upsert(
             ids=ids,
             documents=documents,
-            embeddings=embeddings,
-            metadatas=metadatas
+            embeddings=embeddings, # type: ignore
+            metadatas=metadatas # type: ignore
         )
 
         return len(sections)
@@ -107,7 +107,7 @@ class VectorStore:
             query_embeddings=[query_embedding],
             n_results=min(top_k, current_count)
         )
-        return results
+        return results # type: ignore
 
     # FUNCTION: Resets the collection by deleting and re-creating it cleanly.
     def clear(self) -> int:

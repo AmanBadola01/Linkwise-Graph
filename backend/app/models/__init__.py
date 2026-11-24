@@ -15,6 +15,10 @@ from backend.app.models.vector import (
     MatchedChunk,
     VectorRetrievalResult,
 )
+from backend.app.models.hybrid import (
+    FusedContext,
+    HybridRetrievalResult,
+)
 
 __all__ = [
     "DocumentSection",
@@ -29,4 +33,6 @@ __all__ = [
     "MultiHopReasoningResult",
     "MatchedChunk",
     "VectorRetrievalResult",
+    "FusedContext",
+    "HybridRetrievalResult",
 ]

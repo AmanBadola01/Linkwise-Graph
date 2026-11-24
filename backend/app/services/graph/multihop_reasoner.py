@@ -29,7 +29,7 @@ from backend.app.models.graph import (
     FullGraphData,
     MultiHopReasoningResult
 )
-from backend.app.services.graph_retriever import GraphRetriever
+from backend.app.services.graph.graph_retriever import GraphRetriever
 
 logger = logging.getLogger("graphrag.multihop")
 
