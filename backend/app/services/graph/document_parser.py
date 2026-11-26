@@ -61,24 +61,19 @@ class DocumentParser:
         )
 
     # FUNCTION: First-pass scan to identify recurring header/footer lines across pages via frequency analysis.
-    def _detect_header_footer_lines(self, reader: PdfReader) -> Set[str]:
+    def _detect_header_footer_lines(self, page_texts: List[str]) -> Set[str]:
         """
         Scans the first and last 3 lines of every page. Any normalized line
         appearing on more than `header_footer_threshold` fraction of pages
         is classified as a repeating header or footer.
         """
-        total_pages = len(reader.pages)
+        total_pages = len(page_texts)
         if total_pages < 2:
             return set()
 
         line_counter: Counter = Counter()
 
-        for page in reader.pages:
-            try:
-                raw_text = page.extract_text(extraction_mode="layout") or ""
-            except Exception:
-                raw_text = page.extract_text() or ""
-
+        for raw_text in page_texts:
             lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
             if not lines:
                 continue
@@ -169,8 +164,18 @@ class DocumentParser:
         reader = PdfReader(str(path))
         total_pages = len(reader.pages)
 
+        # Extract every page exactly once (layout mode preserves paragraph
+        # gaps). Previously each page was extracted twice — once for the
+        # header/footer scan and once for chunking — doubling parse time.
+        page_texts: List[str] = []
+        for page in reader.pages:
+            try:
+                page_texts.append(page.extract_text(extraction_mode="layout") or "")
+            except Exception:
+                page_texts.append(page.extract_text() or "")
+
         # First pass: detect recurring headers/footers across all pages
-        recurring_patterns = self._detect_header_footer_lines(reader)
+        recurring_patterns = self._detect_header_footer_lines(page_texts)
         if recurring_patterns:
             print(f"   📋 Detected {len(recurring_patterns)} recurring header/footer pattern(s) to filter")
 
@@ -178,16 +183,9 @@ class DocumentParser:
         current_section_title = "Overview & Introduction"
         chunk_counter = 1
 
-        # Second pass: extract and chunk content
-        for page_idx, page in enumerate(reader.pages):
+        # Second pass: chunk the already-extracted text
+        for page_idx, raw_text in enumerate(page_texts):
             page_num = page_idx + 1
-
-            # Use layout mode to preserve visual paragraph gaps (\n\n)
-            try:
-                raw_text = page.extract_text(extraction_mode="layout") or ""
-            except Exception:
-                # Fallback to standard extraction if layout mode is unavailable
-                raw_text = page.extract_text() or ""
 
             # Split text into paragraphs separated by double newlines
             raw_paragraphs = re.split(r'\n\s*\n', raw_text)

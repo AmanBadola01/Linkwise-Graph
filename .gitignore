@@ -1,15 +1,36 @@
-# Virtual Environment
-.venv/
-
-# Environment Variables & Secrets
-.env
-
-# Local ChromaDB Vector Database
-chroma_data/
-
-# Raw Datasets & Benchmark PDFs
-data_set/
-
-# Python Bytecode & Cache
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+
+# Environment and secrets (never commit real values)
+.env
+.env.*
+!.env.example
+frontend/.env.local
+
+# Local databases and runtime data
+chroma_data/
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Tooling and deployment runtime (logs, binaries, PM2 state)
+.tools/
+
+# OS and editor
+.DS_Store
+.idea/
+.vscode/
+*.log

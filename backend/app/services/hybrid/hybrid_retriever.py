@@ -151,7 +151,7 @@ class HybridRetriever:
             else:
                 # Fallback to general 1-2 hop neighborhood subgraph expansion
                 graph_retriever = self.get_graph_retriever()
-                graph_result = graph_retriever.retrieve(query=clean_query, max_hops=min(2, max_hops_graph))
+                graph_result = graph_retriever.retrieve(query=clean_query, depth=min(2, max_hops_graph))
                 if graph_result and graph_result.subgraph:
                     subgraph_nodes = graph_result.subgraph.nodes
                     subgraph_edges = graph_result.subgraph.edges

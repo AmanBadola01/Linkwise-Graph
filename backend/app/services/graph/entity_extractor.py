@@ -13,13 +13,15 @@ import os
 import re
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple, Set, Optional
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
 # Load environment variables
-load_dotenv()
+# Load the repo-root .env explicitly (no upward search, which can hit unreadable parent dirs)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", ".env"))
 
 # Import Pydantic models
 from backend.app.models.document import DocumentSection, ParsedDocument
@@ -52,6 +54,14 @@ class EntityExtractor:
             )
 
         self.model_name = model_name
+        # The lite model periodically returns 503 "high demand"; the full
+        # flash model answered in ~1s during the same window, so extraction
+        # falls back to it instead of failing sections (GEMINI_FALLBACK_MODEL
+        # can override, empty string disables).
+        self.fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "models/gemini-3.5-flash")
+        # Set when the primary model fails: later batches in this upload skip
+        # straight to the fallback instead of each paying a failed attempt.
+        self._primary_down = False
         self.client = genai.Client(api_key=self.api_key)
 
         # Universal set of forbidden generic words that must never be graph nodes.
@@ -96,6 +106,107 @@ class EntityExtractor:
             "6. Assign a confidence score between 0.8 and 1.0 based on how explicitly the relationship is stated."
         )
 
+    # Batching bounds: one Gemini call covers several consecutive sections.
+    # This is the main upload-latency lever — previously every paragraph was
+    # its own sequential API call (16 calls for a 3-page PDF).
+    MAX_SECTIONS_PER_BATCH = 6
+    MAX_CHARS_PER_BATCH = 6000
+
+    @classmethod
+    def _batches(cls, sections: List[DocumentSection]) -> List[List[DocumentSection]]:
+        """Group consecutive sections into batches bounded by count and size.
+
+        Sections are never batched across pages, so every extracted item can
+        be stamped with the exact page it came from.
+        """
+        batches: List[List[DocumentSection]] = []
+        current: List[DocumentSection] = []
+        chars = 0
+        for section in sections:
+            crosses_page = bool(current) and section.page_number != current[0].page_number
+            if current and (
+                crosses_page
+                or len(current) >= cls.MAX_SECTIONS_PER_BATCH
+                or chars + len(section.content) > cls.MAX_CHARS_PER_BATCH
+            ):
+                batches.append(current)
+                current, chars = [], 0
+            current.append(section)
+            chars += len(section.content)
+        if current:
+            batches.append(current)
+        return batches
+
+    def _postprocess(self, extraction: SectionExtraction, section: DocumentSection) -> SectionExtraction:
+        # Filter out noise and attach provenance (section ID, page)
+        valid_entities = []
+        for ent in extraction.entities:
+            cleaned_name = self._clean_entity_name(ent.name)
+            if self._is_valid_entity(cleaned_name):
+                ent.name = cleaned_name
+                ent.source_section = section.section_id
+                ent.page_number = section.page_number
+                valid_entities.append(ent)
+
+        valid_relationships = []
+        for rel in extraction.relationships:
+            rel.source = self._clean_entity_name(rel.source)
+            rel.target = self._clean_entity_name(rel.target)
+            rel.type = rel.type.strip().upper().replace(" ", "_")
+            rel.source_section = section.section_id
+            rel.page_number = section.page_number
+
+            # Ensure source and target are not forbidden words
+            if (
+                self._is_valid_entity(rel.source)
+                and self._is_valid_entity(rel.target)
+                and rel.source.lower() != rel.target.lower()
+            ):
+                valid_relationships.append(rel)
+
+        return SectionExtraction(entities=valid_entities, relationships=valid_relationships)
+
+    def _generate(self, prompt: str, max_retries: int = 3) -> SectionExtraction:
+        # Try the primary model, then the fallback model, with short backoff.
+        # Previously a 503 from the (overloaded) lite model burned 3 attempts
+        # + 6s of sleeps per section and then silently dropped the section.
+        models = [self.model_name]
+        if self.fallback_model and self.fallback_model != self.model_name:
+            models.append(self.fallback_model)
+        if self._primary_down and len(models) > 1:
+            models = models[1:]
+        last_error: Exception | None = None
+        attempt = 0
+        for model_idx, model in enumerate(models):
+            # With a fallback available, try the primary once and move on
+            # quickly; the last model gets the full retry budget.
+            tries = max(1, max_retries - 1) if model_idx == len(models) - 1 else 1
+            for _ in range(tries):
+                attempt += 1
+                try:
+                    started = time.monotonic()
+                    response = self.client.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=self.system_instruction,
+                            response_mime_type="application/json",
+                            response_schema=SectionExtraction,
+                            temperature=0.0,  # Zero temperature for deterministic extraction
+                        ),
+                    )
+                    logger.info(
+                        "Gemini extraction call (%s) took %.1fs", model, time.monotonic() - started
+                    )
+                    return SectionExtraction.model_validate_json(response.text)
+                except Exception as e:  # noqa: BLE001 - retry transient API failures
+                    last_error = e
+                    if model == self.model_name:
+                        self._primary_down = True
+                    logger.warning("Gemini call via %s failed (attempt %d): %s", model, attempt, str(e)[:200])
+                    time.sleep(min(attempt, 3))
+        raise RuntimeError(str(last_error)) if last_error else RuntimeError("Gemini extraction failed")
+
     # FUNCTION: Extracts entities and relationships from a single DocumentSection using structured JSON with retry on server spikes.
     def extract_from_section(self, section: DocumentSection, max_retries: int = 3) -> SectionExtraction:
         prompt = (
@@ -103,62 +214,81 @@ class EntityExtractor:
             f"Text to extract:\n\"\"\"\n{section.content}\n\"\"\"\n\n"
             "Extract all named entities and relationships present in this text."
         )
+        try:
+            return self._postprocess(self._generate(prompt, max_retries), section)
+        except Exception as e:  # noqa: BLE001 - one bad section must not fail the upload
+            logger.error(f"Error extracting from section {section.section_id} after {max_retries} attempts: {e}")
+            return SectionExtraction(entities=[], relationships=[])
 
-        for attempt in range(max_retries):
+    # FUNCTION: Extracts from many sections with one Gemini call per batch.
+    def extract_from_sections(
+        self, sections: List[DocumentSection]
+    ) -> Tuple[List[ExtractedEntity], List[ExtractedRelationship], int]:
+        """Returns (entities, relationships, failed_section_count).
+
+        Batches share a page, so provenance stamping stays exact. A failed
+        batch is counted and skipped rather than silently dropped, and never
+        fails the whole upload.
+        """
+        batches = self._batches(sections)
+        logger.info("Extracting from %d sections in %d Gemini batch(es)", len(sections), len(batches))
+
+        def run_batch(batch: List[DocumentSection]):
+            first = batch[0]
+            ents: List[ExtractedEntity] = []
+            rels: List[ExtractedRelationship] = []
+            failed_here = 0
+            if len(batch) == 1:
+                result = self.extract_from_section(first)
+                return result.entities, result.relationships, failed_here
+
+            blocks = "\n\n".join(
+                f"[Section {s.section_id} | {s.section_title}]\n{s.content}" for s in batch
+            )
+            prompt = (
+                f"Context: page {first.page_number} of a document, in {len(batch)} consecutive sections.\n\n"
+                f"Text to extract:\n\"\"\"\n{blocks}\n\"\"\"\n\n"
+                "Extract all named entities and relationships present in this text, across all sections."
+            )
             try:
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.system_instruction,
-                        response_mime_type="application/json",
-                        response_schema=SectionExtraction,
-                        temperature=0.0,  # Zero temperature for deterministic extraction
-                    ),
+                extraction = self._generate(prompt)
+            except Exception as e:  # noqa: BLE001
+                # Don't drop the whole batch: retry section-by-section.
+                logger.error(
+                    "Gemini batch on page %d failed (%s); falling back to per-section extraction",
+                    first.page_number, str(e)[:200],
                 )
+                for s in batch:
+                    result = self.extract_from_section(s)
+                    if not result.entities and not result.relationships:
+                        failed_here += 1
+                    ents.extend(result.entities)
+                    rels.extend(result.relationships)
+                return ents, rels, failed_here
+            # All sections in a batch share a page, so page provenance is exact;
+            # attribute items to the first section of the batch.
+            processed = self._postprocess(extraction, first)
+            return processed.entities, processed.relationships, failed_here
 
-                extraction = SectionExtraction.model_validate_json(response.text)
+        # Batches are independent: run a few concurrently. Kept small (default
+        # 3, GEMINI_CONCURRENCY) — fully parallel per-section calls previously
+        # triggered free-tier 429s. Sequential batches took ~15s each in
+        # series; concurrency makes total time ~= the slowest batch.
+        workers = max(1, int(os.getenv("GEMINI_CONCURRENCY", "3")))
+        if len(batches) <= 1 or workers == 1:
+            results = [run_batch(b) for b in batches]
+        else:
+            with ThreadPoolExecutor(max_workers=min(workers, len(batches))) as pool:
+                results = list(pool.map(run_batch, batches))
 
-                # Post-process: Filter out noise and attach provenance (section ID, page)
-                valid_entities = []
-                for ent in extraction.entities:
-                    cleaned_name = self._clean_entity_name(ent.name)
-                    if self._is_valid_entity(cleaned_name):
-                        ent.name = cleaned_name
-                        ent.source_section = section.section_id
-                        ent.page_number = section.page_number
-                        valid_entities.append(ent)
-
-                valid_relationships = []
-                for rel in extraction.relationships:
-                    rel.source = self._clean_entity_name(rel.source)
-                    rel.target = self._clean_entity_name(rel.target)
-                    rel.type = rel.type.strip().upper().replace(" ", "_")
-                    rel.source_section = section.section_id
-                    rel.page_number = section.page_number
-
-                    # Ensure source and target are not forbidden words
-                    if (
-                        self._is_valid_entity(rel.source)
-                        and self._is_valid_entity(rel.target)
-                        and rel.source.lower() != rel.target.lower()
-                    ):
-                        valid_relationships.append(rel)
-
-                return SectionExtraction(
-                    entities=valid_entities,
-                    relationships=valid_relationships,
-                )
-
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    wait_time = 2 * (attempt + 1)
-                    time.sleep(wait_time)
-                else:
-                    logger.error(
-                        f"Error extracting from section {section.section_id} after {max_retries} attempts: {e}"
-                    )
-                    return SectionExtraction(entities=[], relationships=[])
+        all_entities: List[ExtractedEntity] = []
+        all_relationships: List[ExtractedRelationship] = []
+        failed = 0
+        for ents, rels, failed_here in results:
+            all_entities.extend(ents)
+            all_relationships.extend(rels)
+            failed += failed_here
+        return all_entities, all_relationships, failed
 
     # FUNCTION: Iterates over all sections of a parsed document and extracts all entities and relationships.
     def extract_from_document(
@@ -170,23 +300,11 @@ class EntityExtractor:
         print(f"\n Starting LLM Extraction across {len(parsed_doc.sections)} chunks...")
         print("=" * 80)
 
-        for idx, section in enumerate(parsed_doc.sections, 1):
-            print(
-                f"[{idx:02d}/{len(parsed_doc.sections):02d}] Extracting from {section.section_id} "
-                f"(Page {section.page_number} | '{section.section_title}')...",
-                end="",
-                flush=True,
-            )
-
-            result = self.extract_from_section(section)
-            all_entities.extend(result.entities)
-            all_relationships.extend(result.relationships)
-
-            print(
-                f" Done! -> Found {len(result.entities)} entities, {len(result.relationships)} relationships."
-            )
-            # Gentle pacing to avoid free-tier API rate limits
-            time.sleep(0.4)
+        # Batched extraction (one Gemini call per page-group) — no per-section
+        # pacing sleep, which previously added 0.4s x every section.
+        all_entities, all_relationships, failed = self.extract_from_sections(parsed_doc.sections)
+        if failed:
+            print(f"   ⚠️  {failed} section(s) failed extraction and were skipped")
 
         print("=" * 80)
         print(f" Total Raw Entities Extracted:      {len(all_entities)}")

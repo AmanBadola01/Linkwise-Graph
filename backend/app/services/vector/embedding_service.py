@@ -16,6 +16,16 @@ from chromadb.utils import embedding_functions
 
 logger = logging.getLogger("graphrag.vector.embedding")
 
+# Process-wide singleton: the ONNX model is loaded once, not per request.
+_SINGLETON: "EmbeddingService | None" = None
+
+
+def get_embedding_service() -> "EmbeddingService":
+    global _SINGLETON
+    if _SINGLETON is None:
+        _SINGLETON = EmbeddingService()
+    return _SINGLETON
+
 
 # CLASS: Dedicated service to generate text embeddings locally using the all-MiniLM-L6-v2 ONNX model.
 class EmbeddingService:

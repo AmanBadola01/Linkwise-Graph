@@ -20,12 +20,30 @@ from neo4j import GraphDatabase, Driver, Session
 from dotenv import load_dotenv
 
 # Load environment configuration
-load_dotenv()
+# Load the repo-root .env explicitly (no upward search, which can hit unreadable parent dirs)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", ".env"))
 
 # Import graph domain models
 from backend.app.models.graph import GraphNode, GraphEdge, FullGraphData
+from backend.app.core.tenant import get_current_account_id
 
 logger = logging.getLogger("graphrag.builder")
+
+# Shared Neo4j drivers (one per URI+user, process-wide) and accounts whose
+# schema is already ensured. Previously every upload/query created a driver,
+# paid a verify_connectivity round-trip, and re-ran 4 schema statements.
+_DRIVERS: Dict[Tuple[str, str], Driver] = {}
+_SCHEMA_DONE: set = set()
+
+
+def _shared_driver(uri: str, user: str, password: str) -> Driver:
+    key = (uri, user)
+    driver = _DRIVERS.get(key)
+    if driver is None:
+        driver = GraphDatabase.driver(uri, auth=(user, password))
+        driver.verify_connectivity()
+        _DRIVERS[key] = driver
+    return driver
 
 
 # CLASS: Manages Neo4j graph database operations including schema creation, ingestion, degree calculation, and retrieval.
@@ -39,20 +57,16 @@ class GraphBuilder:
         self,
         uri: Optional[str] = None,
         user: Optional[str] = None,
-        password: Optional[str] = None
+        password: Optional[str] = None,
+        account_id: Optional[str] = None,
     ):
+        self.account_id = account_id or get_current_account_id()
         self.uri = uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.user = user or os.getenv("NEO4J_USER", "neo4j")
         self.password = password or os.getenv("NEO4J_PASSWORD", "password")
 
         try:
-            self.driver: Driver = GraphDatabase.driver(
-                self.uri,
-                auth=(self.user, self.password)
-            )
-            # Verify connectivity immediately
-            self.driver.verify_connectivity()
-            print(f" Connected to Neo4j successfully at {self.uri}")
+            self.driver: Driver = _shared_driver(self.uri, self.user, self.password)
         except Exception as e:
             logger.error(f"Failed to connect to Neo4j at {self.uri}: {e}")
             raise ConnectionError(
@@ -60,19 +74,38 @@ class GraphBuilder:
                 f"Ensure your Docker container 'graphrag-neo4j' is running: {e}"
             )
 
-    # FUNCTION: Closes the Neo4j driver connection cleanly when work is finished.
+    # FUNCTION: No-op — the driver is shared process-wide and stays open.
     def close(self):
-        if self.driver:
-            self.driver.close()
+        return None
 
     # FUNCTION: Creates unique constraints and performance indexes on node properties.
     def setup_schema(self):
-        print(" Setting up Neo4j schema constraints and indexes...")
+        # Ensured once per account per process, not on every upload.
+        if self.account_id in _SCHEMA_DONE:
+            return
         queries = [
-            # Constraint: Ensure node ID uniqueness across all Entity nodes
+            # Migrate pre-tenancy nodes (BUG-02): legacy rows have
+            # account_id IS NULL and belong to no account. Quarantine them
+            # under a sentinel account so they neither collide with nor leak
+            # into any real tenant's graph.
             """
-            CREATE CONSTRAINT entity_id_unique IF NOT EXISTS
-            FOR (e:Entity) REQUIRE e.id IS UNIQUE
+            MATCH (n:Entity) WHERE n.account_id IS NULL
+            SET n.account_id = 'legacy-unassigned'
+            """,
+            # Legacy pre-tenancy constraint on (id) alone: superseded by the
+            # composite below. Left in place it made any re-upload crash —
+            # MERGE on (id, account_id) could not match pre-tenancy nodes
+            # (account_id IS NULL) and the CREATE then violated (id) UNIQUE,
+            # failing the whole ingest after all Gemini work was done.
+            "DROP CONSTRAINT entity_id_unique IF EXISTS",
+            # Composite uniqueness per account (multi-tenant)
+            """
+            CREATE CONSTRAINT entity_account_id_unique IF NOT EXISTS
+            FOR (e:Entity) REQUIRE (e.account_id, e.id) IS UNIQUE
+            """,
+            """
+            CREATE INDEX entity_account_id_idx IF NOT EXISTS
+            FOR (e:Entity) ON (e.account_id)
             """,
             # Index: Fast lookups by entity canonical name
             """
@@ -88,97 +121,83 @@ class GraphBuilder:
 
         with self.driver.session() as session:
             for query in queries:
-                session.run(query)
-        print(" Neo4j schema constraints and indexes initialized.")
+                session.run(query).consume()
+        _SCHEMA_DONE.add(self.account_id)
 
-    # FUNCTION: Ingests a list of canonical GraphNode instances into Neo4j using Cypher MERGE.
+    # FUNCTION: Ingests canonical nodes with one UNWIND query per type label.
     def ingest_nodes(self, nodes: List[GraphNode]) -> int:
-        print(f" Ingesting {len(nodes)} canonical nodes into Neo4j...")
+        if not nodes:
+            return 0
+        by_label: Dict[str, List[Dict[str, Any]]] = {}
+        for node in nodes:
+            # Sanitize entity type to use as a valid secondary Cypher label (e.g. :Person, :Product)
+            sanitized_label = re.sub(r'[^a-zA-Z0-9]', '', node.type.strip().capitalize()) or "Concept"
+            by_label.setdefault(sanitized_label, []).append({
+                "id": node.id, "name": node.name, "type": node.type,
+                "description": node.description, "source_doc": node.source_doc,
+                "page": node.page, "aliases": node.aliases,
+            })
+
         ingested_count = 0
-
         with self.driver.session() as session:
-            for node in nodes:
-                # Sanitize entity type to use as a valid secondary Cypher label (e.g. :Person, :Product)
-                sanitized_label = re.sub(r'[^a-zA-Z0-9]', '', node.type.strip().capitalize())
-                if not sanitized_label:
-                    sanitized_label = "Concept"
-
+            for label, rows in by_label.items():
                 query = f"""
-                MERGE (n:Entity {{id: $id}})
-                SET n:{sanitized_label},
-                    n.name = $name,
-                    n.type = $type,
-                    n.description = $description,
-                    n.source_doc = $source_doc,
-                    n.page = $page,
-                    n.aliases = $aliases,
-                    n.community_id = null
-                RETURN n.id AS node_id
+                UNWIND $rows AS row
+                MERGE (n:Entity {{id: row.id, account_id: $account_id}})
+                SET n:{label},
+                    n.name = row.name,
+                    n.type = row.type,
+                    n.description = row.description,
+                    n.source_doc = row.source_doc,
+                    n.page = row.page,
+                    n.aliases = row.aliases,
+                    n.community_id = null,
+                    n.account_id = $account_id
+                RETURN count(n) AS written
                 """
-
-                session.run(
-                    query,
-                    id=node.id,
-                    name=node.name,
-                    type=node.type,
-                    description=node.description,
-                    source_doc=node.source_doc,
-                    page=node.page,
-                    aliases=node.aliases
-                )
-                ingested_count += 1
-
-        print(f" Successfully ingested {ingested_count} nodes into Neo4j.")
+                record = session.run(query, rows=rows, account_id=self.account_id).single()
+                ingested_count += int(record["written"]) if record else 0
         return ingested_count
 
-    # FUNCTION: Ingests a list of canonical GraphEdge instances into Neo4j using typed relationship MERGE queries.
+    # FUNCTION: Ingests directed relationships with one UNWIND query per type.
     def ingest_edges(self, edges: List[GraphEdge]) -> int:
-        print(f" Ingesting {len(edges)} directed relationships into Neo4j...")
+        if not edges:
+            return 0
+        by_type: Dict[str, List[Dict[str, Any]]] = {}
+        for edge in edges:
+            # Sanitize relationship type for Cypher syntax (e.g. REPORTS_TO, BUILT_BY)
+            sanitized_rel_type = re.sub(r'[^A-Z0-9_]', '_', edge.type.strip().upper()) or "RELATED_TO"
+            by_type.setdefault(sanitized_rel_type, []).append({
+                "id": edge.id, "source": edge.source, "target": edge.target,
+                "type": sanitized_rel_type, "description": edge.description,
+                "confidence": edge.confidence, "source_doc": edge.source_doc, "page": edge.page,
+            })
+
         ingested_count = 0
-
         with self.driver.session() as session:
-            for edge in edges:
-                # Sanitize relationship type for Cypher syntax (e.g. REPORTS_TO, BUILT_BY)
-                sanitized_rel_type = re.sub(r'[^A-Z0-9_]', '_', edge.type.strip().upper())
-                if not sanitized_rel_type:
-                    sanitized_rel_type = "RELATED_TO"
-
+            for rel_type, rows in by_type.items():
                 query = f"""
-                MATCH (s:Entity {{name: $source}})
-                MATCH (t:Entity {{name: $target}})
-                MERGE (s)-[r:{sanitized_rel_type}]->(t)
-                SET r.id = $id,
-                    r.type = $type,
-                    r.description = $description,
-                    r.confidence = $confidence,
-                    r.source_doc = $source_doc,
-                    r.page = $page
-                RETURN r.id AS edge_id
+                UNWIND $rows AS row
+                MATCH (s:Entity {{name: row.source, account_id: $account_id}})
+                MATCH (t:Entity {{name: row.target, account_id: $account_id}})
+                MERGE (s)-[r:{rel_type}]->(t)
+                SET r.id = row.id,
+                    r.type = row.type,
+                    r.description = row.description,
+                    r.confidence = row.confidence,
+                    r.source_doc = row.source_doc,
+                    r.page = row.page
+                RETURN count(r) AS written
                 """
-
-                result = session.run(
-                    query,
-                    id=edge.id,
-                    source=edge.source,
-                    target=edge.target,
-                    type=sanitized_rel_type,
-                    description=edge.description,
-                    confidence=edge.confidence,
-                    source_doc=edge.source_doc,
-                    page=edge.page
-                )
-
-                if result.peek():
-                    ingested_count += 1
-
-        print(f" Successfully ingested {ingested_count} relationships into Neo4j.")
+                record = session.run(query, rows=rows, account_id=self.account_id).single()
+                ingested_count += int(record["written"]) if record else 0
         return ingested_count
 
     # FUNCTION: Calculates and updates the connection degree on all nodes for graph visualizer sizing.
     def compute_degrees(self) -> int:
         print(" Calculating node connectivity degrees...")
         query = """
-        MATCH (n:Entity)
+        MATCH (n:Entity {account_id: $account_id})
         OPTIONAL MATCH (n)-[r]-()
         WITH n, count(r) AS degree
         SET n.degree = degree
@@ -186,7 +205,7 @@ class GraphBuilder:
         """
 
         with self.driver.session() as session:
-            result = session.run(query)
+            result = session.run(query, account_id=self.account_id)
             record = result.single()
             count = record["updated_count"] if record else 0
 
@@ -227,8 +246,9 @@ class GraphBuilder:
 
         with self.driver.session() as session:
             # Query all canonical nodes
-            node_result = session.run("""
-                MATCH (n:Entity)
+            node_result = session.run(
+                """
+                MATCH (n:Entity {account_id: $account_id})
                 RETURN n.id AS id,
                        n.name AS name,
                        n.type AS type,
@@ -238,7 +258,9 @@ class GraphBuilder:
                        coalesce(n.degree, 0) AS degree,
                        coalesce(n.aliases, []) AS aliases,
                        n.community_id AS community_id
-            """)
+                """,
+                account_id=self.account_id,
+            )
 
             for rec in node_result:
                 nodes.append(GraphNode(
@@ -254,8 +276,9 @@ class GraphBuilder:
                 ))
 
             # Query all directed edges
-            edge_result = session.run("""
-                MATCH (s:Entity)-[r]->(t:Entity)
+            edge_result = session.run(
+                """
+                MATCH (s:Entity {account_id: $account_id})-[r]->(t:Entity {account_id: $account_id})
                 RETURN coalesce(r.id, s.id + '_' + type(r) + '_' + t.id) AS id,
                        s.name AS source,
                        t.name AS target,
@@ -264,7 +287,9 @@ class GraphBuilder:
                        coalesce(r.confidence, 1.0) AS confidence,
                        coalesce(r.source_doc, '') AS source_doc,
                        coalesce(r.page, 1) AS page
-            """)
+                """,
+                account_id=self.account_id,
+            )
 
             for rec in edge_result:
                 edges.append(GraphEdge(
@@ -291,7 +316,8 @@ class GraphBuilder:
         edges: List[GraphEdge] = []
 
         query = f"""
-        MATCH path = (start:Entity {{name: $name}})-[*1..{depth}]-(connected:Entity)
+        MATCH path = (start:Entity {{name: $name, account_id: $account_id}})-[*1..{depth}]-(connected:Entity)
+        WHERE all(x IN nodes(path) WHERE x.account_id = $account_id)
         UNWIND nodes(path) AS n
         WITH DISTINCT n, relationships(path) AS rels
         UNWIND rels AS r
@@ -300,7 +326,7 @@ class GraphBuilder:
         """
 
         with self.driver.session() as session:
-            result = session.run(query, name=entity_name)
+            result = session.run(query, name=entity_name, account_id=self.account_id)
 
             for rec in result:
                 node_data = rec["n"]
@@ -347,11 +373,22 @@ class GraphBuilder:
             total_edges=len(unique_edges)
         )
 
+    # FUNCTION: Removes one document's nodes (ingest rollback, BUG-03).
+    def delete_by_source_doc(self, source_doc: str) -> int:
+        query = """
+        MATCH (n:Entity {account_id: $account_id, source_doc: $source_doc})
+        DETACH DELETE n
+        RETURN count(n) AS deleted
+        """
+        with self.driver.session() as session:
+            record = session.run(query, account_id=self.account_id, source_doc=source_doc).single()
+        return int(record["deleted"]) if record else 0
+
     # FUNCTION: Completely clears all nodes and relationships from the Neo4j database.
     def clear_database(self) -> int:
-        print("⚠️ Clearing all data from Neo4j database...")
-        query = "MATCH (n) DETACH DELETE n"
+        print(f"Clearing graph data for account {self.account_id}...")
+        query = "MATCH (n:Entity {account_id: $account_id}) DETACH DELETE n"
         with self.driver.session() as session:
-            session.run(query)
-        print(" Neo4j database cleared successfully.")
+            session.run(query, account_id=self.account_id)
+        print(" Account graph cleared successfully.")
         return 0

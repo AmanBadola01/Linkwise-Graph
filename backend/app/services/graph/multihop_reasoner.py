@@ -20,7 +20,8 @@ from google import genai
 from google.genai import types
 
 # Load environment configuration
-load_dotenv()
+# Load the repo-root .env explicitly (no upward search, which can hit unreadable parent dirs)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", ".env"))
 
 # Import domain models and retriever helper
 from backend.app.models.graph import (
@@ -30,6 +31,7 @@ from backend.app.models.graph import (
     MultiHopReasoningResult
 )
 from backend.app.services.graph.graph_retriever import GraphRetriever
+from backend.app.services.llm_errors import SynthesisUnavailableError
 
 logger = logging.getLogger("graphrag.multihop")
 
@@ -48,7 +50,8 @@ class MultiHopReasoner:
         user: Optional[str] = None,
         password: Optional[str] = None,
         api_key: Optional[str] = None,
-        model_name: str = "models/gemini-3.5-flash-lite"
+        model_name: str = "models/gemini-3.5-flash-lite",
+        retriever: Optional[GraphRetriever] = None
     ):
         self.uri = uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.user = user or os.getenv("NEO4J_USER", "neo4j")
@@ -68,8 +71,8 @@ class MultiHopReasoner:
             raise ConnectionError(f"Could not connect to Neo4j at {self.uri}: {e}")
 
         self.client = genai.Client(api_key=self.api_key) if self.api_key else None
-        # Reuse GraphRetriever for robust entity linking and full-text search
-        self.retriever = GraphRetriever(
+        # Reuse GraphRetriever for robust entity linking and full-text search (or a caller-supplied one)
+        self.retriever = retriever or GraphRetriever(
             uri=self.uri,
             user=self.user,
             password=self.password,
@@ -95,7 +98,9 @@ class MultiHopReasoner:
         query = f"""
         MATCH (s:Entity), (t:Entity)
         WHERE s.name = $start AND t.name = $target
+          AND s.account_id = $account_id AND t.account_id = $account_id
         MATCH path = (s)-[*1..{max_hops}]-(t)
+        WHERE all(x IN nodes(path) WHERE x.account_id = $account_id)
         RETURN [n IN nodes(path) | {{
                     id: n.id,
                     name: n.name,
@@ -119,7 +124,13 @@ class MultiHopReasoner:
         """
         paths: List[Dict[str, Any]] = []
         with self.driver.session() as session:
-            result = session.run(query, start=start_entity, target=target_entity, limit=limit)
+            result = session.run(
+                query,
+                start=start_entity,
+                target=target_entity,
+                limit=limit,
+                account_id=self.retriever.account_id,
+            )
             for rec in result:
                 paths.append({
                     "nodes": rec["nodes"],
@@ -133,7 +144,9 @@ class MultiHopReasoner:
         query = """
         MATCH (s:Entity), (t:Entity)
         WHERE s.name = $start AND t.name = $target
+          AND s.account_id = $account_id AND t.account_id = $account_id
         MATCH path = shortestPath((s)-[*]-(t))
+        WHERE all(x IN nodes(path) WHERE x.account_id = $account_id)
         RETURN [n IN nodes(path) | {
                     id: n.id,
                     name: n.name,
@@ -154,7 +167,12 @@ class MultiHopReasoner:
                length(path) AS hops
         """
         with self.driver.session() as session:
-            result = session.run(query, start=start_entity, target=target_entity)
+            result = session.run(
+                query,
+                start=start_entity,
+                target=target_entity,
+                account_id=self.retriever.account_id,
+            )
             rec = result.single()
             if rec:
                 return {
@@ -177,6 +195,8 @@ class MultiHopReasoner:
         query = f"""
         MATCH path = (s:Entity)-[*2..{max_hops}]-(t:Entity)
         WHERE s.name IN $seeds AND s.name <> t.name
+          AND s.account_id = $account_id AND t.account_id = $account_id
+          AND all(x IN nodes(path) WHERE x.account_id = $account_id)
         RETURN [n IN nodes(path) | {{
                     id: n.id,
                     name: n.name,
@@ -200,7 +220,12 @@ class MultiHopReasoner:
         """
         paths: List[Dict[str, Any]] = []
         with self.driver.session() as session:
-            result = session.run(query, seeds=seed_entities, limit=limit)
+            result = session.run(
+                query,
+                seeds=seed_entities,
+                limit=limit,
+                account_id=self.retriever.account_id,
+            )
             for rec in result:
                 paths.append({
                     "nodes": rec["nodes"],
@@ -368,5 +393,6 @@ class MultiHopReasoner:
             )
             return response.text.strip()
         except Exception as e:
+            # Friendly retryable error, no raw provider payload (QA residual).
             logger.error(f"Failed to synthesize multi-hop answer: {e}")
-            return f"Error synthesizing answer: {e}"
+            raise SynthesisUnavailableError(SynthesisUnavailableError.friendly_message) from e

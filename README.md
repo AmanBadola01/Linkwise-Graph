@@ -1,28 +1,40 @@
 # Linkwise-Graph
 
-> **A Hybrid GraphRAG & Vector Retrieval-Augmented Generation Platform** combining Knowledge Graph traversal (Neo4j) with dense semantic search (ChromaDB) and Google Gemini for deep relational reasoning and factual document intelligence.
+**A hybrid GraphRAG and vector retrieval platform for document intelligence.**
+
+Linkwise-Graph combines a Neo4j knowledge graph with ChromaDB dense vector search and Google Gemini synthesis to answer questions that span multiple entities, indirect relationships, and structural dependencies across documents. Every answer is grounded in source material and returned with bracketed page citations (`[Page X]`), an explicit reasoning chain, and the subgraph that supports it.
+
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-116.202.210.102%3A20324-blue)](http://116.202.210.102:20324)
+[![GitHub](https://img.shields.io/badge/GitHub-AmanBadola01%2FLinkwise--Graph-black?logo=github)](https://github.com/AmanBadola01/Linkwise-Graph)
+![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
 
-## 📖 Overview
+## Overview
 
-Standard Vector RAG struggles with complex queries that span multiple entities, indirect relationships, or structural dependencies across documents. **Linkwise-Graph** solves this by parsing documents into both a **property graph in Neo4j** and a **persistent vector database in ChromaDB**, then fusing their outputs into a unified context for factual, cited answer synthesis.
+Conventional vector-only RAG retrieves text that is semantically similar to a query, but it cannot reliably trace how entities relate to one another across a document. Linkwise-Graph addresses this by indexing every document twice:
 
-Key capabilities:
-- **Entity & Relationship Extraction:** Automated extraction of entities, directed relationships, and metadata using Google Gemini with strict schema enforcement.
-- **Dynamic Noise Filtering & Entity Resolution:** Normalizes variations (e.g., `J. Smith` → `John Smith`), deduplicates aliases via RapidFuzz, and prunes noise and stopwords without hardcoded rules.
-- **Multi-Hop Relational Reasoning:** Traverses 2-to-4 hop paths across the knowledge graph to trace explicit reasoning chains with source page citations.
-- **Modular Vector Retrieval:** Local, zero-cost ONNX embedding generation (`all-MiniLM-L6-v2`) paired with ChromaDB HNSW cosine similarity search.
-- **Hybrid Fusion & Synthesis:** Combines graph relational backbones with detailed text paragraphs to answer complex questions with bracketed page citations (`[Page X]`).
-- **Production REST API:** High-performance FastAPI backend with endpoints for multi-mode querying (`vector`, `graph`, `hybrid`), real-time graph visualization, document ingestion, and system health checks.
+- **As a property graph in Neo4j** — entities, directed relationships, and degree centrality, enabling multi-hop relational reasoning.
+- **As dense vectors in ChromaDB** — 384-dimensional embeddings from a locally hosted ONNX model, enabling fast semantic search at zero embedding cost.
+
+At query time, a hybrid engine fuses both retrieval paths into a single context and synthesizes a cited answer. The platform ships as a full-stack application: a FastAPI backend, a Next.js frontend with an interactive force-directed graph visualizer, per-account authentication, and tenant-isolated data.
+
+### Key capabilities
+
+- **Automated graph construction** — Gemini-powered entity and relationship extraction with strict schema enforcement, followed by dynamic noise filtering and fuzzy entity resolution (RapidFuzz).
+- **Multi-hop relational reasoning** — 2-to-4 hop Cypher traversals and shortest-path queries that produce auditable, step-by-step reasoning chains with page citations.
+- **Tri-mode querying** — `vector`, `graph`, and `hybrid` modes behind a single endpoint, so callers can trade semantic recall against relational precision.
+- **Interactive visualization** — a D3 force-directed graph explorer with entity-type filtering, focused subgraphs, and per-query subgraph highlighting.
+- **Production-grade ingestion** — a six-stage pipeline with active-content (malware) screening, content-hash deduplication, parse-before-mutate ordering, and transactional rollback on failure.
+- **Authenticated, tenant-isolated access** — bcrypt password hashing, short-lived JWT sessions in HttpOnly cookies, rate limiting, and per-account graph/vector isolation.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```text
                       ┌───────────────────────────────┐
-                      │      Input PDF Document       │
+                      │       Input PDF Document      │
                       └───────────────┬───────────────┘
                                       │
                                       ▼
@@ -30,7 +42,6 @@ Key capabilities:
                       │        Document Parser        │
                       │   (Layout & Header Removal)   │
                       └───────────────┬───────────────┘
-                                      │
                   ┌───────────────────┴───────────────────┐
                   │ (Text Chunks)       (Structured Nodes)│
                   ▼                                       ▼
@@ -72,211 +83,173 @@ Key capabilities:
                       │ • /api/v1/query  (Tri-Mode)   │
                       │ • /api/v1/graph  (Visualizer) │
                       │ • /api/v1/ingest (PDF Upload) │
+                      │ • /api/v1/auth   (Accounts)   │
                       │ • /api/v1/health (Telemetry)  │
                       └───────────────┬───────────────┘
                                       │
                                       ▼
                       ┌───────────────────────────────┐
-                      │  Cited Answer [Page X] Output │
-                      │  + Visualizer Subgraph Payload│
+                      │   Next.js Frontend (App)      │
+                      │  Upload · Ask · Graph · Auth  │
                       └───────────────────────────────┘
 ```
 
-### System Dataflow
+### Request flow
 
 ```mermaid
 flowchart TD
-    Doc["Input PDF Document"] --> Parser["Document Parser\n(Layout & Header Removal)"]
-    
-    Parser -->|"Raw Text Chunks"| VP["Vector Pipeline\n(ONNX all-MiniLM-L6-v2)"]
-    Parser -->|"Structured Sections"| KG["Knowledge Graph Pipeline\n(Gemini Extraction & Resolution)"]
-    
-    VP --> VS[("ChromaDB Vector Store\n(HNSW Cosine Index)")]
-    KG --> Neo4j[("Neo4j Property Graph\n(Entities & Centrality)")]
-    
-    VS --> VR["Vector RAG Engine\n(Dense Semantic Search)"]
-    Neo4j --> GR["Graph RAG Engine\n(Multi-Hop Reasoning 2-4 hops)"]
-    
-    VR --> Hybrid["Hybrid RAG Engine\n(HybridRetriever & Context Fusion)"]
+    Doc["Input PDF Document"] --> Parser["Document Parser<br/>(Layout & Header Removal)"]
+    Parser -->|"Raw Text Chunks"| VP["Vector Pipeline<br/>(ONNX all-MiniLM-L6-v2)"]
+    Parser -->|"Structured Sections"| KG["Knowledge Graph Pipeline<br/>(Gemini Extraction & Resolution)"]
+    VP --> VS[("ChromaDB Vector Store<br/>(HNSW Cosine Index)")]
+    KG --> Neo4j[("Neo4j Property Graph<br/>(Entities & Centrality)")]
+    VS --> VR["Vector RAG Engine<br/>(Dense Semantic Search)"]
+    Neo4j --> GR["Graph RAG Engine<br/>(Multi-Hop Reasoning 2-4 hops)"]
+    VR --> Hybrid["Hybrid RAG Engine<br/>(HybridRetriever & Context Fusion)"]
     GR --> Hybrid
-    
-    Hybrid --> API["FastAPI REST Layer\n(/api/v1/query, /api/v1/graph, /api/v1/ingest)"]
-    API --> Out["Cited Answer [Page X]\n+ Subgraph Visualizer Payload"]
+    Hybrid --> API["FastAPI REST Layer<br/>(/api/v1/query, /api/v1/graph, /api/v1/ingest)"]
+    API --> Out["Cited Answer [Page X]<br/>+ Subgraph Visualizer Payload"]
 ```
 
 ---
 
-## 📁 Project Structure
+## Features
+
+### Document ingestion
+
+- Layout-aware PDF parsing with PyPDF, including running header/footer removal via multi-page line-frequency analysis and hierarchical section detection.
+- Gemini structured extraction of entities, entity types, descriptions, directed relationships, and source page numbers.
+- Dynamic noise filtering (temporal references, monetary amounts, generic labels, orphan nodes, self-loops) and entity resolution (person-initial expansion, RapidFuzz token-sort matching, alias rewiring).
+- Active-content screening that rejects PDFs carrying JavaScript, embedded files, launch actions, or rich media before any parsing or indexing occurs.
+- Content-hash deduplication per account, so re-uploading identical bytes returns the stored result without re-billing the LLM.
+- Failure-safe semantics: parsing precedes any mutation, and a failed ingest rolls back its graph nodes and vector chunks, leaving no partial data queryable.
+
+### Retrieval and synthesis
+
+- **Vector mode** — local ONNX embeddings (`all-MiniLM-L6-v2`, 384 dimensions) with ChromaDB HNSW cosine search.
+- **Graph mode** — fuzzy entity linking, 1–2 hop neighborhood expansion, central-hub fallback for broad queries, and variable-length (`2..4` hop) traversals with explicit reasoning chains.
+- **Hybrid mode** — parallel graph and vector retrieval, fused into a dual-section context and synthesized with anti-hallucination prompting.
+
+### Frontend
+
+- Next.js 16 (App Router) with React 19, Tailwind CSS 4, Framer Motion, and D3 Force.
+- Dedicated workspaces for document upload, question answering, graph exploration, and account management.
+- Streaming API proxy (`/api/v1/[...path]`) that forwards session cookies and request bodies without buffering large uploads, with a configurable timeout for long ingests.
+
+### Security
+
+- JWT authentication (HS256, 12-hour default expiry) with per-user token versioning for server-side revocation.
+- HttpOnly, SameSite=Lax session cookies; bearer tokens remain available for API clients.
+- bcrypt password hashing with constant-time dummy verification to avoid account-enumeration timing leaks.
+- Per-IP rate limiting on authentication endpoints, fail-closed CORS, and production hardening (interactive docs disabled when `ENVIRONMENT=production`).
+- Tenant isolation via request-scoped account context across both Neo4j and ChromaDB.
+
+---
+
+## Technology stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| Frontend | Next.js 16, React 19, Tailwind CSS 4 | App Router UI, workspaces, and API proxy |
+| Visualization | D3 Force, Framer Motion | Force-directed graph rendering and motion |
+| Web framework | FastAPI 0.115+, Uvicorn | Asynchronous REST API and ASGI serving |
+| Graph database | Neo4j 5 Community | Property graph, Cypher traversal, degree centrality |
+| Vector database | ChromaDB | Persistent HNSW index with cosine similarity |
+| Embeddings | ONNX `all-MiniLM-L6-v2` | 384-dimensional vectors computed locally on CPU |
+| LLM | Google Gemini (`gemini-3.5-flash-lite`) | Structured extraction and cited answer synthesis |
+| Entity resolution | RapidFuzz | Fuzzy matching and alias deduplication |
+| Validation | Pydantic v2 | Typed domain models and API schemas |
+| PDF processing | PyPDF | Layout-aware text and section extraction |
+| Authentication | PyJWT, passlib (bcrypt) | Token issuance and password hashing |
+| Process management | PM2 | Production process supervision and restart |
+
+---
+
+## Project structure
 
 ```text
 Linkwise-Graph/
-├── .env.example                               # Environment configuration template
-├── .gitignore                                 # Git ignore patterns
-├── requirements.txt                           # Production Python dependencies
-├── README.md                                  # System documentation
+├── README.md
+├── requirements.txt                 # Backend Python dependencies
+├── ecosystem.config.js              # PM2 production configuration
+├── .env.example                     # Environment configuration template
 │
-└── backend/
-    └── app/
-        ├── main.py                            # FastAPI application entry point & CORS
-        │
-        ├── api/                               # REST API layer
-        │   ├── __init__.py                    # API package exports
-        │   └── v1/                            # API Version 1 endpoints
-        │       ├── __init__.py                # Router aggregation
-        │       ├── health.py                  # GET /api/v1/health
-        │       ├── graph.py                   # GET /api/v1/graph
-        │       ├── query.py                   # POST /api/v1/query
-        │       └── ingest.py                  # POST /api/v1/ingest
-        │
-        ├── models/                            # Domain data models
-        │   ├── __init__.py                    # Model exports
-        │   ├── document.py                    # DocumentSection, ParsedDocument
-        │   ├── graph.py                       # Entity, Relationship, GraphNode, GraphEdge
-        │   ├── vector.py                      # MatchedChunk, VectorRetrievalResult
-        │   └── hybrid.py                      # FusedContext, HybridRetrievalResult
-        │
-        ├── schemas/                           # API request & response schemas
-        │   ├── __init__.py                    # Schema exports
-        │   └── api_schemas.py                 # QueryRequest, QueryResponse, IngestionResponse, etc.
-        │
-        └── services/                          # Business logic & engines
-            ├── __init__.py                    # Service delegation exports
-            │
-            ├── graph/                         # Knowledge Graph Pipeline & Graph RAG
-            │   ├── __init__.py                # Graph module exports
-            │   ├── document_parser.py         # PDF layout chunking & header pruning
-            │   ├── entity_extractor.py        # Gemini structured extraction
-            │   ├── noise_filter.py            # Dynamic noise and stopword filtering
-            │   ├── entity_resolver.py         # RapidFuzz deduplication & alias rewiring
-            │   ├── graph_builder.py           # Neo4j schema, constraints, degree centrality
-            │   ├── graph_retriever.py         # Entity linking, subgraphs, central hub fallback
-            │   └── multihop_reasoner.py       # 2-4 hop Cypher traversal & reasoning chains
-            │
-            ├── vector/                        # Modular Vector RAG
-            │   ├── __init__.py                # Vector module exports
-            │   ├── embedding_service.py       # Local ONNX CPU embedder (all-MiniLM-L6-v2)
-            │   ├── vector_store.py            # ChromaDB persistent store & HNSW index
-            │   ├── vector_retriever.py        # Dense semantic search & chunk ranking
-            │   └── vector_synthesizer.py      # Context linearization & Gemini synthesis
-            │
-            └── hybrid/                        # Hybrid RAG Engine
-                ├── __init__.py                # Hybrid module exports
-                ├── hybrid_retriever.py        # Dual retrieval coordinator & context fusion
-                └── hybrid_synthesizer.py      # Dual-grounded cited answer synthesis
+├── backend/
+│   ├── app/
+│   │   ├── main.py                  # FastAPI entry point, CORS, lifespan
+│   │   ├── api/
+│   │   │   ├── deps.py              # Auth dependencies and session handling
+│   │   │   └── v1/
+│   │   │       ├── auth.py          # Signup, login, logout, password change
+│   │   │       ├── health.py        # GET /api/v1/health
+│   │   │       ├── graph.py         # GET /api/v1/graph
+│   │   │       ├── query.py         # POST /api/v1/query (tri-mode)
+│   │   │       └── ingest.py        # POST /api/v1/ingest (6-stage pipeline)
+│   │   ├── core/
+│   │   │   └── tenant.py            # Per-request account context
+│   │   ├── models/                  # Document, graph, vector, hybrid models
+│   │   ├── schemas/
+│   │   │   └── api_schemas.py       # Request/response contracts
+│   │   └── services/
+│   │       ├── auth/                # Security, user store, rate limiting
+│   │       ├── graph/               # Parser, extractor, filters, builder,
+│   │       │                        # retriever, multi-hop reasoner
+│   │       ├── vector/              # Embeddings, store, retriever, synthesizer
+│   │       ├── hybrid/              # Fusion retriever and synthesizer
+│   │       ├── ingest_registry.py   # Content-hash deduplication registry
+│   │       └── llm_errors.py        # LLM failure classification
+│   └── tests/                       # Regression and security test suites
+│
+└── frontend/
+    ├── package.json
+    ├── next.config.ts
+    └── src/
+        ├── app/                     # Routes: home, upload, ask, graph,
+        │                            # login, signup, account, about
+        ├── components/              # Upload, ask, graph, auth, layout UI
+        ├── lib/                     # API client, sessions, graph layout
+        └── middleware.ts            # Session-aware route protection
 ```
 
 ---
 
-## 🛠️ Core Components & Features
-
-### 1. Document Ingestion & Parsing (`backend/app/services/graph/document_parser.py`)
-- Visual layout-aware PDF text extraction with PyPDF.
-- Dynamic multi-page line frequency analysis to eliminate running headers and footers.
-- Regex-based hierarchical section detection (numbered, markdown, all-caps, title-case).
-
-### 2. Knowledge Graph Pipeline (`backend/app/services/graph/`)
-- **Entity Extraction (`entity_extractor.py`):** Uses Google Gemini structured output to extract nodes, node types, descriptions, directed relationships, and source page numbers.
-- **Dynamic Noise Filtering (`noise_filter.py`):** Dynamically filters out temporal references, monetary amounts, generic lowercase labels, orphan nodes, and self-loops.
-- **Entity Resolution (`entity_resolver.py`):**
-  - Resolves person initial aliases (e.g., `J. Smith` → `John Smith`).
-  - Matches token-sort fuzzy similarity using RapidFuzz.
-  - Rewires duplicate relationships to canonical nodes.
-- **Graph Builder (`graph_builder.py`):**
-  - Enforces unique constraints and full-text indexes in Neo4j.
-  - Ingests canonical nodes and directed relationships.
-  - Computes degree centrality dynamically on graph ingestion.
-
-### 3. Graph Retrieval & Multi-Hop Reasoning (`backend/app/services/graph/`)
-- **Graph Retriever (`graph_retriever.py`):**
-  - Links queried entities via fuzzy matching and full-text indexes.
-  - Expands 1-to-2 hop subgraphs around focal entities.
-  - Central Hub Fallback: handles broad global queries by retrieving highest degree centrality nodes.
-- **Multi-Hop Reasoner (`multihop_reasoner.py`):**
-  - Executes variable-length Cypher traversals (`2..4` hops) and shortest-path queries.
-  - Generates explicit step-by-step reasoning chains with page citations:
-    $$\text{Entity A} \xrightarrow{\text{RELATION [Page X]}} \text{Entity B} \xrightarrow{\text{RELATION [Page Y]}} \text{Entity C}$$
-  - Synthesizes grounded natural language answers using Gemini.
-
-### 4. Modular Vector RAG (`backend/app/services/vector/`)
-- **`embedding_service.py`:** Generates 384-dimensional dense embeddings locally on CPU using the ONNX-optimized `all-MiniLM-L6-v2` model ($0 API cost).
-- **`vector_store.py`:** Wraps ChromaDB persistent storage at `./chroma_data` using HNSW indexing with cosine distance metric.
-- **`vector_retriever.py`:** Embeds queries, retrieves nearest neighbors, normalizes distance into similarity scores $[0, 1]$, and produces typed `MatchedChunk` objects.
-- **`vector_synthesizer.py`:** Formats retrieved chunks into linearized context blocks and prompts Gemini (`gemini-3.5-flash-lite`) to produce accurate answers with bracketed page citations (`[Page X]`).
-
-### 5. Hybrid RAG Engine (`backend/app/services/hybrid/`)
-- **`hybrid_retriever.py`:** Executes parallel retrieval across both Neo4j (graph paths/subgraphs) and ChromaDB (vector chunks), deduplicates referenced source pages, and constructs a structured dual-section `FusedContext`.
-- **`hybrid_synthesizer.py`:** Feeds the fused context to Gemini with anti-hallucination prompting, producing a complete `HybridRetrievalResult` containing:
-  - Factual natural language answer with `[Page X]` citations.
-  - Active subgraph nodes and directed edges for interactive frontend visualization.
-  - Deduplicated source pages and supporting text chunks.
-
-### 6. FastAPI REST API (`backend/app/api/v1/`)
-- **`main.py`:** Application factory with CORS middleware configured for Next.js frontend, lifespan event management, and route registration.
-- **`health.py`:** Diagnostic endpoint reporting live connectivity to Neo4j, ChromaDB, and Google Gemini.
-- **`graph.py`:** Visualizer endpoint returning nodes (with degree centrality), directed edges, dynamic entity-type histograms, and focused subgraph filtering (`?entity=&depth=`).
-- **`query.py`:** Tri-mode RAG query routing (`mode: "vector" | "graph" | "hybrid"`). Returns cited answers, active visualizer subgraphs, and source page badges.
-- **`ingest.py`:** Multipart PDF upload handler executing the complete 6-stage ingestion pipeline into both ChromaDB and Neo4j.
-
----
-
-## 🌐 API Reference
-
-| Method | Endpoint | Description | Key Parameters / Payload |
-|---|---|---|---|
-| `GET` | `/` | Service status & documentation metadata | None |
-| `GET` | `/api/v1/health` | Infrastructure connectivity & readiness | None |
-| `GET` | `/api/v1/graph` | Knowledge graph visualization payload | Query params: `entity` (optional), `depth` (1-3) |
-| `POST` | `/api/v1/query` | Unified multi-mode RAG querying | Body: `{"query": "...", "mode": "vector" \| "graph" \| "hybrid", "top_k": 3}` |
-| `POST` | `/api/v1/ingest` | PDF document upload & 6-stage ingestion | Multipart form: `file: UploadFile` (.pdf) |
-
----
-
-## 🚀 Getting Started
+## Getting started
 
 ### Prerequisites
-- Python 3.10+ (Tested on Python 3.14)
-- Docker Desktop (for running Neo4j)
-- Google Gemini API Key
 
-### 1. Clone & Set Up Environment
+- Python 3.10 or later
+- Node.js 20 or later and npm
+- Docker (for Neo4j), or an existing Neo4j 5 instance
+- A Google Gemini API key ([Google AI Studio](https://aistudio.google.com/app/apikey))
+
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/AmanBadola01/Linkwise-Graph.git
 cd Linkwise-Graph
-
-# Create and activate virtual environment
-python -m venv .venv
-
-# Windows (PowerShell):
-.venv\Scripts\Activate.ps1
-# Linux/macOS:
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
 ```
 
-### 2. Configure Environment Variables
+### 2. Configure the environment
 
-Create a `.env` file in the project root:
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and set at minimum:
 
 ```env
-# Google Gemini API
 GEMINI_API_KEY=your_gemini_api_key_here
-
-# Neo4j Graph Database
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=your_password
-
-# Vector Database
-CHROMA_PERSIST_DIR=./chroma_data
-
-# CORS Origins (comma-separated)
-CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+JWT_SECRET=replace-with-a-long-random-secret   # 32+ characters, required
 ```
 
-### 3. Start Neo4j Container
+> The server refuses to start without a valid `JWT_SECRET`. Generate one with `openssl rand -hex 32` and never commit a real value.
+
+See [.env.example](.env.example) for the full set of options, including `CORS_ORIGINS`, `COOKIE_SECURE`, `MAX_UPLOAD_MB`, and `ENVIRONMENT`.
+
+### 3. Start Neo4j
 
 ```bash
 docker run -d \
@@ -286,93 +259,134 @@ docker run -d \
   neo4j:5-community
 ```
 
-### 4. Run the FastAPI Backend Server
+### 4. Run the backend
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The interactive documentation will be available at:
-- **Swagger UI:** `http://localhost:8000/docs`
-- **ReDoc:** `http://localhost:8000/redoc`
+Interactive API documentation is available at `http://localhost:8000/docs` (disabled in production).
+
+### 5. Run the frontend
+
+```bash
+cd frontend
+npm install
+# Point the frontend at the backend (defaults to http://127.0.0.1:8003):
+#   LINKWISE_BACKEND_URL=http://127.0.0.1:8000
+npm run dev
+```
+
+Open `http://localhost:3000`, create an account, upload a PDF, and start asking questions.
 
 ---
 
-## ⚡ Programmatic Usage Examples
+## API reference
 
-### 1. Ingestion Pipeline
+All endpoints are versioned under `/api/v1`. Except for health checks and authentication, every endpoint requires a valid session (HttpOnly cookie or `Authorization: Bearer <token>`).
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/` | No | Service metadata and endpoint index |
+| `GET` | `/api/v1/health` | No | Live probes for Neo4j, ChromaDB, and Gemini |
+| `POST` | `/api/v1/auth/signup` | No | Create an account and start a session |
+| `POST` | `/api/v1/auth/login` | No | Sign in and start a session |
+| `POST` | `/api/v1/auth/logout` | Yes | End the current session |
+| `GET` | `/api/v1/auth/me` | Yes | Return the authenticated user |
+| `POST` | `/api/v1/auth/change-password` | Yes | Change password and revoke prior tokens |
+| `GET` | `/api/v1/graph` | Yes | Full graph or focused subgraph (`?entity=&depth=1..5`) |
+| `POST` | `/api/v1/query` | Yes | Tri-mode RAG query (`vector` \| `graph` \| `hybrid`) |
+| `POST` | `/api/v1/ingest` | Yes | PDF upload and six-stage ingestion (multipart) |
+
+### Query example
+
+```bash
+curl -X POST http://localhost:8000/api/v1/query \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "query": "What subsystem does the Lead Architect oversee, and what are its performance limits?",
+    "mode": "hybrid",
+    "top_k": 3,
+    "max_hops": 3
+  }'
+```
+
+Responses include the cited answer, the step-by-step reasoning chain, the active subgraph (nodes and edges) for visualization, matched text chunks, deduplicated source pages, and the parameters actually applied per mode (`effective_top_k` / `effective_max_hops`).
+
+### Programmatic usage
 
 ```python
 from backend.app.services.graph import (
-    DocumentParser,
-    EntityExtractor,
-    NoiseFilter,
-    EntityResolver,
-    GraphBuilder,
+    DocumentParser, EntityExtractor, NoiseFilter, EntityResolver, GraphBuilder,
 )
+from backend.app.services.hybrid import HybridRetriever, HybridSynthesizer
 
-# Parse Document Layout
 parser = DocumentParser()
 parsed_doc = parser.parse_pdf("path/to/document.pdf")
 
-# Extract Entities & Relationships
 extractor = EntityExtractor()
-raw_extractions = [extractor.extract_section(s) for s in parsed_doc.sections]
+raw = [extractor.extract_from_section(s) for s in parsed_doc.sections]
 
-# Filter Noise
-filter_service = NoiseFilter()
-clean_extractions = [filter_service.filter(ext) for ext in raw_extractions]
+clean = [NoiseFilter().filter(ext) for ext in raw]
+nodes, edges = EntityResolver().resolve(clean)
 
-# Resolve Aliases & Deduplicate
-resolver = EntityResolver()
-resolved_nodes, resolved_edges = resolver.resolve(clean_extractions)
-
-# Build Graph in Neo4j
 builder = GraphBuilder()
 builder.setup_schema()
-builder.ingest_nodes(resolved_nodes)
-builder.ingest_edges(resolved_edges)
+builder.ingest_nodes(nodes)
+builder.ingest_edges(edges)
 builder.compute_degrees()
-```
-
-### 2. Querying via Hybrid RAG
-
-```python
-from backend.app.services.hybrid import HybridRetriever, HybridSynthesizer
 
 retriever = HybridRetriever()
 synthesizer = HybridSynthesizer()
-
-# Execute dual retrieval & context fusion
-query = "What subsystem does the Lead Architect oversee and what are its performance limits?"
-fused_context = retriever.retrieve(query=query, top_k_vector=3, max_hops_graph=3)
-
-# Synthesize cited answer
-result = synthesizer.synthesize(fused_context)
-
-print("Answer:", result.answer)
-print("Source Pages:", result.source_pages)
-print(f"Active Subgraph: {len(result.subgraph_nodes)} nodes, {len(result.subgraph_edges)} edges")
+fused = retriever.retrieve(
+    query="What subsystem does the Lead Architect oversee?",
+    top_k_vector=3, max_hops_graph=3,
+)
+result = synthesizer.synthesize(fused)
+print(result.answer)        # cited answer with [Page X] markers
+print(result.source_pages)  # deduplicated source pages
 ```
 
 ---
 
-## 📋 Technology Stack
+## Deployment
 
-| Layer | Component | Description |
+The repository includes a PM2 configuration ([ecosystem.config.js](ecosystem.config.js)) that runs both tiers under process supervision with automatic restart:
+
+| Service | Port | Description |
 |---|---|---|
-| **Web Framework** | FastAPI 0.115+ | High-performance asynchronous REST API framework |
-| **ASGI Server** | Uvicorn | Lightning-fast ASGI web server implementation |
-| **Graph Database** | Neo4j 5 Community | Property graph, Cypher queries, shortest paths, degree centrality |
-| **Vector Database** | ChromaDB | Persistent local HNSW vector index with cosine metric |
-| **Embeddings** | ONNX `all-MiniLM-L6-v2` | 384-dimensional dense vectors computed locally on CPU |
-| **LLM & Reasoning** | Google Gemini `gemini-3.5-flash-lite` | Structured entity extraction & cited answer synthesis |
-| **Entity Resolution** | RapidFuzz | Fuzzy token matching and person initial deduplication |
-| **Data Validation** | Pydantic v2 | Strictly typed domain models and API schemas |
-| **PDF Extraction** | PyPDF | Layout-aware paragraph and section parser |
+| `linkwise-frontend` | `20324` | Next.js production server (public) |
+| `linkwise-backend` | `20325` | FastAPI/Uvicorn API (bound to `0.0.0.0`) |
+
+```bash
+npm install -g pm2
+pm2 start ecosystem.config.js
+pm2 save
+```
+
+**Live deployment:** [http://116.202.210.102:20324](http://116.202.210.102:20324)
+
+For production, set `ENVIRONMENT=production` (disables `/docs`, `/redoc`, and `/openapi.json`), `COOKIE_SECURE=true` behind HTTPS, and a restrictive `CORS_ORIGINS` allowlist.
 
 ---
 
-## 📄 License
+## Testing
+
+Backend regression and security suites live in `backend/tests/` and run with pytest:
+
+```bash
+pip install -r requirements.txt
+pytest backend/tests -q
+```
+
+The suites cover query validation, ingestion safety (active-content rejection, rollback, deduplication), authentication hardening, and tenant isolation.
+
+---
+
+## License
 
 This project is licensed under the MIT License.

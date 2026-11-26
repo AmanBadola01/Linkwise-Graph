@@ -14,7 +14,7 @@ import logging
 from typing import List, Optional
 from backend.app.models.document import DocumentSection
 from backend.app.models.vector import MatchedChunk
-from backend.app.services.vector.embedding_service import EmbeddingService
+from backend.app.services.vector.embedding_service import EmbeddingService, get_embedding_service
 from backend.app.services.vector.vector_store import VectorStore
 
 logger = logging.getLogger("graphrag.vector.retriever")
@@ -35,7 +35,7 @@ class VectorRetriever:
         embedding_service: Optional[EmbeddingService] = None,
         vector_store: Optional[VectorStore] = None
     ):
-        self.embedder = embedding_service or EmbeddingService()
+        self.embedder = embedding_service or get_embedding_service()
         self.store = vector_store or VectorStore()
         logger.info("VectorRetriever initialized with EmbeddingService and VectorStore")
 

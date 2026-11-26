@@ -12,7 +12,8 @@ from fastapi import APIRouter
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load the repo-root .env explicitly (no upward search, which can hit unreadable parent dirs)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", ".env"))
 
 from backend.app.schemas.api_schemas import HealthResponse, ComponentStatus
 from backend.app.services.vector.vector_store import VectorStore
@@ -36,14 +37,14 @@ async def check_health() -> HealthResponse:
         driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
         driver.verify_connectivity()
         with driver.session() as session:
-            result = session.run("MATCH (n:Entity) RETURN count(n) AS node_count")
-            record = result.single()
-            node_count = record["node_count"] if record else 0
-            neo4j_status.details = f"Connected ({node_count} nodes in knowledge graph)"
+            # Anonymous probe: no tenant data or global counts (BUG-05/22).
+            session.run("RETURN 1 AS ok").single()
+            neo4j_status.details = "Connected"
     except Exception as e:
         logger.warning(f"Neo4j health check failed: {e}")
         neo4j_status.status = "unreachable"
-        neo4j_status.details = f"Connection failed: {str(e)}"
+        # Unauthenticated endpoint: never echo driver errors (hosts/URIs).
+        neo4j_status.details = "Connection failed"
     finally:
         if driver:
             driver.close()
@@ -51,13 +52,16 @@ async def check_health() -> HealthResponse:
     # 2. Probe ChromaDB Vector Database
     chroma_status = ComponentStatus(status="healthy", details="Storage operational")
     try:
-        store = VectorStore()
-        chunk_count = store.count()
-        chroma_status.details = f"Active collection ({chunk_count} chunks indexed)"
+        # Explicit collection: VectorStore() without one requires an
+        # authenticated tenant context, which a health probe does not have —
+        # that made this check report "degraded" permanently.
+        store = VectorStore(collection_name="document_chunks")
+        store.count()
+        chroma_status.details = "Storage operational"
     except Exception as e:
         logger.warning(f"ChromaDB health check failed: {e}")
         chroma_status.status = "degraded"
-        chroma_status.details = f"Vector store error: {str(e)}"
+        chroma_status.details = "Vector store error"
 
     # 3. Probe Google Gemini API Credentials
     gemini_status = ComponentStatus(status="healthy", details="API key configured")

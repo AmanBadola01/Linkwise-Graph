@@ -19,9 +19,15 @@ pypdf>=7.0.0
 
 # Data Validation & Environment
 pydantic>=2.10.0
+email-validator>=2.2.0
 python-dotenv>=1.0.0
 
 # Web Framework & API (FastAPI)
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.18
+
+# Authentication
+passlib[bcrypt]>=1.7.4
+PyJWT>=2.9.0
+pytest>=8.0.0  # backend/tests (BUG-24)

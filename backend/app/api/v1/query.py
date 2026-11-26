@@ -7,25 +7,29 @@ Provides:
   returning factual cited answers, active subgraph nodes/edges, and source page numbers.
 """
 
+import asyncio
 import logging
 from typing import List, Set
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
+
+from fastapi import APIRouter, HTTPException, Depends
+
+from backend.app.api.deps import get_current_user
+from backend.app.services.auth.user_store import UserRecord
 from backend.app.schemas.api_schemas import QueryRequest, QueryResponse, QueryMode
 from backend.app.services.vector import VectorRetriever, VectorSynthesizer
 from backend.app.services.graph import MultiHopReasoner, GraphRetriever
 from backend.app.services.hybrid import HybridRetriever, HybridSynthesizer
+from backend.app.services.llm_errors import SynthesisUnavailableError
 
 logger = logging.getLogger("graphrag.api.query")
 
 router = APIRouter(prefix="/query", tags=["Query"])
 
 
-# FUNCTION: Dispatches a natural language query to the appropriate RAG engine based on requested mode.
-@router.post("", response_model=QueryResponse, summary="Execute RAG Query")
-async def execute_query(request: QueryRequest) -> QueryResponse:
+def _execute_query_sync(request: QueryRequest) -> QueryResponse:
+    """Synchronous dispatch (embedding + Neo4j + Gemini are blocking calls)."""
     clean_query = request.query.strip()
-    logger.info(f"Received query request: mode='{request.mode}', query='{clean_query}'")
-
     try:
         # Route 1: Pure Vector RAG Mode
         if request.mode == QueryMode.VECTOR:
@@ -45,7 +49,9 @@ async def execute_query(request: QueryRequest) -> QueryResponse:
                 subgraph_nodes=[],
                 subgraph_edges=[],
                 matched_chunks=vector_result.matched_chunks,
-                source_pages=source_pages
+                source_pages=source_pages,
+                effective_top_k=request.top_k,
+                effective_max_hops=None,
             )
 
         # Route 2: Pure Graph RAG Mode
@@ -61,11 +67,11 @@ async def execute_query(request: QueryRequest) -> QueryResponse:
             # If no linear path was found, fallback to 1-2 hop neighborhood retrieval
             if not subgraph_nodes:
                 graph_retriever = GraphRetriever()
-                fallback_result = graph_retriever.retrieve(clean_query, max_hops=min(2, request.max_hops))
+                fallback_result = graph_retriever.retrieve(clean_query, depth=min(2, request.max_hops))
                 if fallback_result and fallback_result.subgraph:
                     subgraph_nodes = fallback_result.subgraph.nodes
                     subgraph_edges = fallback_result.subgraph.edges
-                    answer = fallback_result.answer
+                    # GraphRetrievalResult has no synthesized answer; keep the reasoner's answer.
 
             source_pages_set: Set[int] = set()
             for n in subgraph_nodes:
@@ -83,7 +89,9 @@ async def execute_query(request: QueryRequest) -> QueryResponse:
                 subgraph_nodes=subgraph_nodes,
                 subgraph_edges=subgraph_edges,
                 matched_chunks=[],
-                source_pages=sorted(list(source_pages_set))
+                source_pages=sorted(list(source_pages_set)),
+                effective_top_k=None,
+                effective_max_hops=request.max_hops,
             )
 
         # Route 3: Hybrid RAG Mode (Graph + Vector Combined)
@@ -106,9 +114,19 @@ async def execute_query(request: QueryRequest) -> QueryResponse:
                 subgraph_nodes=hybrid_result.subgraph_nodes,
                 subgraph_edges=hybrid_result.subgraph_edges,
                 matched_chunks=hybrid_result.matched_chunks,
-                source_pages=hybrid_result.source_pages
+                source_pages=hybrid_result.source_pages,
+                effective_top_k=request.top_k,
+                effective_max_hops=request.max_hops,
             )
 
+    except SynthesisUnavailableError as e:
+        # Friendly, retryable — never a raw provider payload (QA residual).
+        logger.error(f"Answer synthesis unavailable: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=str(e),
+            headers={"Retry-After": "15"},
+        )
     except ConnectionError as e:
         logger.error(f"Database connection error during query execution: {e}")
         raise HTTPException(
@@ -121,3 +139,14 @@ async def execute_query(request: QueryRequest) -> QueryResponse:
             status_code=500,
             detail=f"Query execution error: {str(e)}"
         )
+
+
+# FUNCTION: Dispatches a natural language query to the appropriate RAG engine based on requested mode.
+@router.post("", response_model=QueryResponse, summary="Execute RAG Query")
+async def execute_query(
+    request: QueryRequest,
+    _user: Annotated[UserRecord, Depends(get_current_user)],
+) -> QueryResponse:
+    logger.info(f"Received query request: mode='{request.mode}', query='{request.query.strip()}'")
+    # Run off the event loop so a slow query does not freeze other endpoints.
+    return await asyncio.to_thread(_execute_query_sync, request)

@@ -69,6 +69,10 @@ class EntityResolver:
         alias_map: Dict[str, str] = {}
         # clusters: canonical_name -> list of ExtractedEntity objects
         clusters: Dict[str, List[ExtractedEntity]] = {}
+        # Canonical names grouped by entity type. _are_same_entity never
+        # merges across types, so only same-type clusters are ever compared —
+        # previously every entity was fuzzy-compared against every cluster.
+        clusters_by_type: Dict[str, List[str]] = {}
 
         # Sort entities so fuller, longer names are considered first as canonical candidates
         sorted_entities = sorted(entities, key=lambda e: len(e.name), reverse=True)
@@ -82,10 +86,10 @@ class EntityResolver:
                 clusters[canonical_name].append(ent)
                 continue
 
-            # Check if it matches an existing cluster
+            # Check if it matches an existing cluster (same type only)
             matched_canonical = None
-            for canonical_name, cluster_items in clusters.items():
-                rep_entity = cluster_items[0]
+            for canonical_name in clusters_by_type.get(ent.type.lower(), []):
+                rep_entity = clusters[canonical_name][0]
                 if self._are_same_entity(ent, rep_entity):
                     matched_canonical = canonical_name
                     break
@@ -100,12 +104,14 @@ class EntityResolver:
                     alias_map[ent_lower] = target_canonical
                     if target_canonical not in clusters:
                         clusters[target_canonical] = []
+                        clusters_by_type.setdefault(ent.type.lower(), []).append(target_canonical)
                     clusters[target_canonical].append(ent)
                 else:
                     # New canonical entity
                     canonical_name = ent.name
                     alias_map[ent_lower] = canonical_name
                     clusters[canonical_name] = [ent]
+                    clusters_by_type.setdefault(ent.type.lower(), []).append(canonical_name)
 
         # Build final canonical GraphNode objects with dynamically selected canonical name
         canonical_nodes: List[GraphNode] = []

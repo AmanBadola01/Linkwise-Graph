@@ -15,9 +15,11 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-load_dotenv()
+# Load the repo-root .env explicitly (no upward search, which can hit unreadable parent dirs)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", ".env"))
 
 from backend.app.models.hybrid import FusedContext, HybridRetrievalResult
+from backend.app.services.llm_errors import SynthesisUnavailableError
 
 logger = logging.getLogger("graphrag.hybrid.synthesizer")
 
@@ -121,8 +123,10 @@ FACTUAL HYBRID ANSWER:"""
             )
             answer_text = response.text.strip() if response.text else "Unable to generate answer from hybrid context."
         except Exception as e:
+            # Never leak raw provider payloads into the answer (QA residual):
+            # surface a friendly, retryable 503 via the query endpoint.
             logger.error(f"Error calling Gemini for hybrid synthesis: {e}")
-            answer_text = f"Error during answer synthesis: {str(e)}"
+            raise SynthesisUnavailableError(SynthesisUnavailableError.friendly_message) from e
 
         return HybridRetrievalResult(
             query=query,

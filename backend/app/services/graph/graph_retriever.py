@@ -22,12 +22,52 @@ from google import genai
 from google.genai import types
 
 # Load environment configuration
-load_dotenv()
+# Load the repo-root .env explicitly (no upward search, which can hit unreadable parent dirs)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", ".env"))
 
 # Import domain models
 from backend.app.models.graph import GraphNode, GraphEdge, FullGraphData, GraphRetrievalResult
+from backend.app.core.tenant import get_current_account_id
 
 logger = logging.getLogger("graphrag.retriever")
+
+# SECURITY (malware/abuse scan 2026-11-25): LLM-generated Cypher is untrusted
+# input. The previous substring blocklist missed LOAD CSV (file/URL read),
+# allowed any CALL when "db.index" appeared, never enforced the tenant
+# filter, and set no row cap. Validate strictly before execution instead.
+_FORBIDDEN_CYPHER_RE = re.compile(
+    r"\b(create|delete|detach|set|merge|drop|remove|load|call|foreach|grant|deny|revoke|terminate)\b",
+    re.IGNORECASE,
+)
+_MAX_CYPHER_ROWS = 100
+
+
+def validate_readonly_cypher(raw_cypher: str, account_id: str) -> Optional[str]:
+    """Return a safe single read-only query, or None to reject.
+
+    Requires: starts with MATCH/WITH, no write/admin/file keywords, the
+    caller's account_id tenant filter is present, and a bounded LIMIT.
+    """
+    if not raw_cypher or not account_id:
+        return None
+    query = raw_cypher.strip().rstrip(";").strip()
+    if not query or ";" in query:
+        return None  # single statement only
+    if not re.match(r"(?is)^(match|with)\b", query):
+        return None
+    if _FORBIDDEN_CYPHER_RE.search(query):
+        return None
+    # Tenant isolation must be in the query itself: the literal account id
+    # (as instructed) filtering on account_id. Cross-tenant reads rejected.
+    if "account_id" not in query or f"'{account_id}'" not in query:
+        return None
+    limit_match = re.search(r"(?i)\blimit\s+(\d+)\s*$", query)
+    if limit_match:
+        if int(limit_match.group(1)) > _MAX_CYPHER_ROWS:
+            query = query[: limit_match.start(1)] + str(_MAX_CYPHER_ROWS) + query[limit_match.end(1):]
+    else:
+        query = f"{query} LIMIT {_MAX_CYPHER_ROWS}"
+    return query
 
 
 # CLASS: Executes tiered hybrid retrieval over Neo4j knowledge graphs using entity linking, full-text search, and Cypher synthesis.
@@ -44,8 +84,10 @@ class GraphRetriever:
         user: Optional[str] = None,
         password: Optional[str] = None,
         api_key: Optional[str] = None,
-        model_name: str = "models/gemini-3.5-flash-lite"
+        model_name: str = "models/gemini-3.5-flash-lite",
+        account_id: Optional[str] = None,
     ):
+        self.account_id = account_id or get_current_account_id()
         self.uri = uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.user = user or os.getenv("NEO4J_USER", "neo4j")
         self.password = password or os.getenv("NEO4J_PASSWORD", "password")
@@ -89,13 +131,13 @@ class GraphRetriever:
     # FUNCTION: Pulls all known canonical entity names, types, and aliases from Neo4j for entity linking.
     def get_known_entities(self) -> List[Dict[str, Any]]:
         query = """
-        MATCH (n:Entity)
+        MATCH (n:Entity {account_id: $account_id})
         RETURN n.name AS name,
                n.type AS type,
                coalesce(n.aliases, []) AS aliases
         """
         with self.driver.session() as session:
-            result = session.run(query)
+            result = session.run(query, account_id=self.account_id)
             return [
                 {
                     "name": rec["name"],
@@ -108,13 +150,13 @@ class GraphRetriever:
     # FUNCTION: Retrieves the highest-connected central hub entities by node degree for answering broad global queries.
     def get_top_hub_entities(self, limit: int = 5) -> List[str]:
         query = """
-        MATCH (n:Entity)
+        MATCH (n:Entity {account_id: $account_id})
         RETURN n.name AS name, coalesce(n.degree, 0) AS degree
         ORDER BY degree DESC
         LIMIT $limit
         """
         with self.driver.session() as session:
-            result = session.run(query, limit=limit)
+            result = session.run(query, account_id=self.account_id, limit=limit)
             return [rec["name"] for rec in result]
 
     # FUNCTION: Identifies canonical entities in a natural language query using exact matching, alias lookup, and RapidFuzz similarity.
@@ -181,7 +223,7 @@ class GraphRetriever:
         cyp_query = """
         CALL db.index.fulltext.queryNodes("entity_fulltext_idx", $search_term)
         YIELD node, score
-        WHERE score > 0.5
+        WHERE score > 0.5 AND node.account_id = $account_id
         RETURN node.name AS name, score
         ORDER BY score DESC
         LIMIT $limit
@@ -189,7 +231,12 @@ class GraphRetriever:
         matched_names: List[str] = []
         try:
             with self.driver.session() as session:
-                result = session.run(cyp_query, search_term=lucene_query, limit=limit)
+                result = session.run(
+                    cyp_query,
+                    search_term=lucene_query,
+                    limit=limit,
+                    account_id=self.account_id,
+                )
                 for rec in result:
                     matched_names.append(rec["name"])
         except Exception as e:
@@ -203,8 +250,8 @@ class GraphRetriever:
             return FullGraphData(nodes=[], edges=[], total_nodes=0, total_edges=0)
 
         query = f"""
-        MATCH path = (start:Entity)-[*1..{depth}]-(connected:Entity)
-        WHERE start.name IN $seed_names
+        MATCH path = (start:Entity {{account_id: $account_id}})-[*1..{depth}]-(connected:Entity)
+        WHERE start.name IN $seed_names AND all(x IN nodes(path) WHERE x.account_id = $account_id)
         UNWIND nodes(path) AS n
         WITH DISTINCT n, relationships(path) AS rels
         UNWIND rels AS r
@@ -216,7 +263,7 @@ class GraphRetriever:
         edges_dict: Dict[str, GraphEdge] = {}
 
         with self.driver.session() as session:
-            result = session.run(query, seed_names=seed_entities)
+            result = session.run(query, seed_names=seed_entities, account_id=self.account_id)
             for rec in result:
                 node_data = rec["n"]
                 node_id = node_data.get("id", f"node_{node_data.get('name', '').lower()}")
@@ -254,12 +301,16 @@ class GraphRetriever:
 
         # Also ensure all seed entities themselves are included even if they have 0 connections
         seed_query = """
-        MATCH (n:Entity)
+        MATCH (n:Entity {account_id: $account_id})
         WHERE n.name IN $seed_names
         RETURN n
         """
         with self.driver.session() as session:
-            seed_result = session.run(seed_query, seed_names=seed_entities)
+            seed_result = session.run(
+                seed_query,
+                seed_names=seed_entities,
+                account_id=self.account_id,
+            )
             for rec in seed_result:
                 node_data = rec["n"]
                 node_id = node_data.get("id", f"node_{node_data.get('name', '').lower()}")
@@ -312,7 +363,9 @@ class GraphRetriever:
             "3. Relationships are directed and uppercase, e.g.: REPORTS_TO, MANAGES, MEMBER_OF, LEADS, BUILT_BY, USES_TECH, LOCATED_IN, DEPENDS_ON, PARTNER_OF.\n"
             "4. Relationship properties: type (string), description (string), confidence (float), page (integer).\n"
             "5. SAFETY: Return ONLY a single read-only MATCH query. NEVER use CREATE, DELETE, SET, DROP, REMOVE, MERGE.\n"
-            "6. Output ONLY the raw Cypher query string without markdown code fences or explanation."
+            f"6. TENANCY: Every Entity node has account_id = '{self.account_id}'. "
+            "Every MATCH on :Entity MUST include {{account_id: '" + self.account_id + "'}} (or equivalent WHERE on n.account_id).\n"
+            "7. Output ONLY the raw Cypher query string without markdown code fences or explanation."
         )
 
         user_prompt = f"Question: {query}\n\nGenerate the Cypher query:"
@@ -328,21 +381,21 @@ class GraphRetriever:
             )
             raw_cypher = response.text.strip().replace("```cypher", "").replace("```", "").strip()
 
-            # Safety check: Ensure query contains no mutating keywords
-            forbidden = ["create", "delete", "set", "drop", "remove", "merge", "call"]
-            lower_cypher = raw_cypher.lower()
-            if any(f in lower_cypher for f in forbidden if f != "call" or "db.index" not in lower_cypher):
-                logger.warning(f"Rejected potentially mutating Cypher: {raw_cypher}")
+            # Strict validation (see validate_readonly_cypher): single
+            # read-only MATCH, tenant filter present, bounded LIMIT.
+            safe_cypher = validate_readonly_cypher(raw_cypher, self.account_id)
+            if safe_cypher is None:
+                logger.warning(f"Rejected unsafe Text2Cypher output: {raw_cypher[:200]}")
                 return None, None
 
-            # Execute the read-only query
-            results: List[Dict[str, Any]] = []
-            with self.driver.session() as session:
-                cypher_res = session.run(raw_cypher)
-                for record in cypher_res:
-                    results.append(record.data())
+            # Execute in a read transaction so the server also rejects writes.
+            def _run(tx) -> List[Dict[str, Any]]:
+                return [record.data() for record in tx.run(safe_cypher)]
 
-            return raw_cypher, results
+            with self.driver.session() as session:
+                results = session.execute_read(_run)
+
+            return safe_cypher, results
 
         except Exception as e:
             logger.debug(f"Text2Cypher generation or execution failed: {e}")

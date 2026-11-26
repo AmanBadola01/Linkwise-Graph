@@ -1,0 +1,1 @@
+export { default } from "@/components/graph/neo4j-graph-view";

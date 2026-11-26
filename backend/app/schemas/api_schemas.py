@@ -11,7 +11,9 @@ Defines HTTP request and response models for:
 
 from enum import Enum
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from backend.app.models.graph import GraphNode, GraphEdge
 from backend.app.models.vector import MatchedChunk
 
@@ -48,6 +50,17 @@ class QueryRequest(BaseModel):
         description="Maximum graph traversal hop depth for multi-hop relational reasoning"
     )
 
+    @field_validator("query", mode="before")
+    @classmethod
+    def strip_query(cls, value: object) -> object:
+        # Whitespace-only queries must 422, not 200 with an empty query (BUG-13).
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("Query must not be empty")
+            return stripped
+        return value
+
 
 # CLASS: Unified response payload containing cited answer, source pages, and active subgraph for visualizer.
 class QueryResponse(BaseModel):
@@ -83,6 +96,10 @@ class QueryResponse(BaseModel):
         default_factory=list,
         description="Sorted list of unique page numbers cited in the response"
     )
+    # Echo of the parameters actually applied for this mode (BUG-23):
+    # vector ignores max_hops (null), graph ignores top_k (null).
+    effective_top_k: Optional[int] = Field(default=None, description="top_k actually applied, null if unused in this mode")
+    effective_max_hops: Optional[int] = Field(default=None, description="max_hops actually applied, null if unused in this mode")
 
 
 # CLASS: Response payload delivering full knowledge graph data for the frontend force-directed visualizer.
@@ -171,3 +188,89 @@ class HealthResponse(BaseModel):
         ...,
         description="Google Gemini LLM API client status"
     )
+
+
+def _normalize_email(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Email must be a string")
+    email = value.strip().lower()
+    if not email or len(email) > 254:
+        raise ValueError("Invalid email address")
+    if " " in email or ".." in email:
+        raise ValueError("Invalid email address")
+    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+        raise ValueError("Invalid email address")
+    return email
+
+
+def _check_password_present(value: str) -> str:
+    if not value or not value.strip():
+        raise ValueError("Password is required")
+    # bcrypt hard-fails past 72 *bytes* (not chars) — validate up front so the
+    # user gets a clear 422 instead of a leaked passlib 409 (BUG-12).
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("Password must be at most 72 bytes when UTF-8 encoded (use fewer or simpler characters)")
+    return value
+
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
+    display_name: str = Field(..., min_length=1, max_length=80)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: object) -> object:
+        return _normalize_email(value)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        return _check_password_present(value)
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def normalize_display_name(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Display name must be a string")
+        name = re.sub(r"\s+", " ", value.strip())
+        if not name:
+            raise ValueError("Display name is required")
+        return name
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=1, max_length=128)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: object) -> object:
+        return _normalize_email(value)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        return _check_password_present(value)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        return _check_password_present(value)
+
+
+class UserPublic(BaseModel):
+    id: str
+    email: EmailStr
+    display_name: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserPublic
