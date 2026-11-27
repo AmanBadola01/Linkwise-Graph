@@ -8,6 +8,22 @@ Linkwise-Graph combines a Neo4j knowledge graph with ChromaDB dense vector searc
 [![GitHub](https://img.shields.io/badge/GitHub-AmanBadola01%2FLinkwise--Graph-black?logo=github)](https://github.com/AmanBadola01/Linkwise-Graph)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+**Live application:** [http://116.202.210.102:20324](http://116.202.210.102:20324) · **Source:** [github.com/AmanBadola01/Linkwise-Graph](https://github.com/AmanBadola01/Linkwise-Graph)
+
+### Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Features](#features)
+- [Technology stack](#technology-stack)
+- [Project structure](#project-structure)
+- [Getting started](#getting-started)
+- [API reference](#api-reference)
+- [Deployment](#deployment)
+- [Testing](#testing)
+- [Contributing](#contributing)
+- [License](#license)
+
 ---
 
 ## Overview
@@ -387,6 +403,14 @@ The suites cover query validation, ingestion safety (active-content rejection, r
 
 ---
 
+## Contributing
+
+Issues and pull requests are welcome on [GitHub](https://github.com/AmanBadola01/Linkwise-Graph). When proposing changes, please run `pytest backend/tests -q` and keep secrets out of commits (use `.env.example` as the template for new configuration keys).
+
+For substantial features, open an issue first so we can align on scope, API shape, and tenancy/security implications before you invest in a large diff.
+
+---
+
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License. See the repository for details.
