@@ -4,7 +4,12 @@ import AboutPage from "@/components/about/about-page";
 export const metadata: Metadata = {
   title: "About · Linkwise-Graph",
   description:
-    "Linkwise-Graph turns PDFs into a cited knowledge graph — upload, ask, and explore relationships.",
+    "Learn how Linkwise-Graph combines Neo4j GraphRAG, ChromaDB vector search, and Gemini synthesis for cited, hybrid document Q&A.",
+  openGraph: {
+    title: "About Linkwise-Graph",
+    description:
+      "Hybrid GraphRAG and vector retrieval for PDFs — multi-hop reasoning, citations, and an interactive knowledge graph.",
+  },
 };
 
 export default function About() {

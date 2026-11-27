@@ -21,6 +21,7 @@ Linkwise-Graph combines a Neo4j knowledge graph with ChromaDB dense vector searc
 - [API reference](#api-reference)
 - [Deployment](#deployment)
 - [Testing](#testing)
+- [About the product](#about-the-product)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -400,6 +401,12 @@ pytest backend/tests -q
 ```
 
 The suites cover query validation, ingestion safety (active-content rejection, rollback, deduplication), authentication hardening, and tenant isolation.
+
+---
+
+## About the product
+
+In the running application, the **About** page (`/about`) summarizes the same story as this README for end users: what Linkwise-Graph does, how the six-stage ingestion pipeline works, the three query modes, security and tenancy, and links to the open-source repository. Use it as the in-app onboarding path after sign-up; use this README for setup, API contracts, and operations.
 
 ---
 
