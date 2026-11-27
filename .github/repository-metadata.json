@@ -1,0 +1,22 @@
+{
+  "name": "Linkwise-Graph",
+  "description": "Hybrid GraphRAG platform combining Neo4j, ChromaDB, and Gemini for cited PDF Q&A. Full-stack FastAPI + Next.js with multi-tenant auth and an interactive knowledge-graph explorer.",
+  "homepage": "http://116.202.210.102:20324",
+  "topics": [
+    "graphrag",
+    "knowledge-graph",
+    "neo4j",
+    "chromadb",
+    "rag",
+    "vector-search",
+    "hybrid-search",
+    "fastapi",
+    "nextjs",
+    "gemini",
+    "pdf",
+    "document-intelligence",
+    "graph-visualization",
+    "llm"
+  ],
+  "license": "MIT"
+}

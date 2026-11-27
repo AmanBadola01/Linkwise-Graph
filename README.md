@@ -408,6 +408,27 @@ The suites cover query validation, ingestion safety (active-content rejection, r
 
 In the running application, the **About** page (`/about`) summarizes the same story as this README for end users: what Linkwise-Graph does, how the six-stage ingestion pipeline works, the three query modes, security and tenancy, and links to the open-source repository. Use it as the in-app onboarding path after sign-up; use this README for setup, API contracts, and operations.
 
+### GitHub repository About (sidebar)
+
+The canonical text for the GitHub **About** box (description, website, and topics) lives in [.github/repository-metadata.json](.github/repository-metadata.json). A longer narrative for contributors is in [.github/ABOUT.md](.github/ABOUT.md).
+
+| GitHub field | Value |
+|---|---|
+| **Description** | Hybrid GraphRAG platform combining Neo4j, ChromaDB, and Gemini for cited PDF Q&A. Full-stack FastAPI + Next.js with multi-tenant auth and an interactive knowledge-graph explorer. |
+| **Website** | http://116.202.210.102:20324 |
+| **Topics** | `graphrag`, `knowledge-graph`, `neo4j`, `chromadb`, `rag`, `vector-search`, `hybrid-search`, `fastapi`, `nextjs`, `gemini`, `pdf`, `document-intelligence`, `graph-visualization`, `llm` |
+
+To apply these fields automatically:
+
+```bash
+chmod +x scripts/update-github-about.sh
+./scripts/update-github-about.sh
+```
+
+The personal access token must include **Contents: Read and write** (already sufficient to push code) **and** **Administration: Read and write** on this repository (fine-grained PAT), or the classic **`repo`** scope. A contents-only token returns `403 Resource not accessible` when updating the sidebar.
+
+You can also set the same values manually on the repository home page via the **About** pencil icon.
+
 ---
 
 ## Contributing
